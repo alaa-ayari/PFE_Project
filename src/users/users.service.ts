@@ -206,4 +206,87 @@ export class UsersService {
   async findByGoogleId(googleId: string): Promise<User | null> {
     return this.userModel.findOne({ googleId }).exec();
   }
+
+  /**
+   * Update or add device info for a user
+   * If device already exists (by deviceId), update lastLoginAt
+   * Otherwise, add new device with firstLoginAt and lastLoginAt
+   */
+  async updateDeviceInfo(userId: string, deviceData: any) {
+    const user = await this.userModel.findById(userId).exec();
+    
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    const now = new Date();
+    
+    // Check if device already exists
+    if (user.devices && user.devices.length > 0) {
+      const existingDeviceIndex = user.devices.findIndex(
+        (device: any) => device.deviceId === deviceData.deviceId
+      );
+
+      if (existingDeviceIndex !== -1) {
+        // Update existing device
+        user.devices[existingDeviceIndex] = {
+          ...user.devices[existingDeviceIndex],
+          ...deviceData,
+          firstLoginAt: user.devices[existingDeviceIndex].firstLoginAt,
+          lastLoginAt: now,
+        };
+      } else {
+        // Add new device
+        user.devices.push({
+          ...deviceData,
+          firstLoginAt: now,
+          lastLoginAt: now,
+        });
+      }
+    } else {
+      // Create devices array with first device
+      user.devices = [{
+        ...deviceData,
+        firstLoginAt: now,
+        lastLoginAt: now,
+      }];
+    }
+
+    const updated = await user.save();
+    const { password, ...result } = updated.toObject();
+    return result;
+  }
+
+  /**
+   * Get all devices for a user
+   */
+  async getDevices(userId: string) {
+    const user = await this.userModel.findById(userId).exec();
+    
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    return user.devices || [];
+  }
+
+  /**
+   * Remove a device from user's device list
+   */
+  async removeDevice(userId: string, deviceId: string) {
+    const updated = await this.userModel
+      .findByIdAndUpdate(
+        userId,
+        { $pull: { devices: { deviceId } } },
+        { new: true }
+      )
+      .exec();
+
+    if (!updated) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    const { password, ...result } = updated.toObject();
+    return result;
+  }
 }

@@ -32,6 +32,18 @@ export class AuthService {
 
   async login(loginDto: LoginDto) {
     const user = await this.validateUser(loginDto.email, loginDto.password);
+    
+    // Save device info if provided
+    if (loginDto.deviceId) {
+      await this.usersService.updateDeviceInfo(user._id.toString(), {
+        deviceId: loginDto.deviceId,
+        deviceModel: loginDto.deviceModel,
+        platform: loginDto.platform,
+        deviceName: loginDto.deviceName,
+        ipAddress: loginDto.ipAddress,
+      });
+    }
+
     const payload = {
       userId: user._id.toString(),
       email: user.email,

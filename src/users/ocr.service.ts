@@ -17,9 +17,6 @@ export class OcrService {
       const { data: { text } } = await worker.recognize(imageBuffer);
       
       await worker.terminate();
-
-      // Extract identity number (8 digits for Tunisian ID cards)
-      // The pattern looks for 8 consecutive digits
       const identityNumberPattern = /\b\d{8}\b/g;
       const matches = text.match(identityNumberPattern);
 
@@ -27,8 +24,7 @@ export class OcrService {
         throw new BadRequestException('Could not extract identity number from the image. Please ensure the image is clear and contains a valid Tunisian ID card.');
       }
 
-      // Return the first 8-digit number found (typically the ID number)
-      // In Tunisian ID cards, the ID number is usually prominently displayed
+
       return matches[0];
     } catch (error) {
       if (error instanceof BadRequestException) {
