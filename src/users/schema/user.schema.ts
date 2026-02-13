@@ -40,7 +40,7 @@ export class User extends Document  {
     email: string;
     @Prop({ required: false })
     password: string
-    @Prop({ required: true, enum: UserRole })
+    @Prop({ required: true, enum: UserRole, default: UserRole.USER })
     role: UserRole;
     @Prop({ required: false })
     phoneNumber: string;
