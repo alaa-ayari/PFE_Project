@@ -8,6 +8,7 @@ import config from './config/config';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
+import { CasesModule } from './cases/cases.module';
 
 
   @Module({
@@ -44,7 +45,7 @@ import { MongooseModule } from '@nestjs/mongoose';
       inject: [ConfigService],
     })
 
-      ,AuthModule, UsersModule],
+      ,AuthModule, UsersModule, CasesModule],
   controllers: [AppController],
   providers: [AppService],
 })
