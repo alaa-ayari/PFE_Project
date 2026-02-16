@@ -11,7 +11,9 @@ export class OcrService {
   async extractIdentityNumber(imageBuffer: Buffer): Promise<string> {
     try {
       // Initialize Tesseract worker (logger disabled for clean output)
-      const worker = await createWorker('ara+eng', 1);
+      const worker = await createWorker('ara+eng', 1, {
+        logger: () => {}, // Suppress warnings
+      });
 
       // Process the image
       const { data: { text } } = await worker.recognize(imageBuffer);
@@ -41,7 +43,9 @@ export class OcrService {
    */
   async extractAllText(imageBuffer: Buffer): Promise<string> {
     try {
-      const worker = await createWorker('ara+eng', 1);
+      const worker = await createWorker('ara+eng', 1, {
+        logger: () => {}, // Suppress warnings
+      });
       const { data: { text } } = await worker.recognize(imageBuffer);
       await worker.terminate();
       return text;

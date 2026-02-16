@@ -86,7 +86,7 @@ export class UsersService {
     }
 
     const updated = await this.userModel
-      .findByIdAndUpdate(id, updateUserDto, { new: true })
+      .findByIdAndUpdate(id, updateUserDto, { returnDocument: 'after' })
       .exec();
 
     if (!updated) {
@@ -111,7 +111,7 @@ export class UsersService {
   const updated = await this.userModel.findByIdAndUpdate(
     userId,
     { password: hashedPassword },
-    { new: true }
+    { returnDocument: 'after' }
   ).exec();
 
   if (!updated) {
@@ -132,7 +132,7 @@ export class UsersService {
       .findByIdAndUpdate(
         id,
         { identitynumber: scanned },
-        { new: true }
+        { returnDocument: 'after' }
       )
       .exec();
 
@@ -189,7 +189,7 @@ export class UsersService {
     }
 
     const updated = await this.userModel
-      .findByIdAndUpdate(userId, updateData, { new: true })
+      .findByIdAndUpdate(userId, updateData, { returnDocument: 'after' })
       .exec();
 
     if (!updated) {
@@ -278,7 +278,7 @@ export class UsersService {
       .findByIdAndUpdate(
         userId,
         { $pull: { devices: { deviceId } } },
-        { new: true }
+        { returnDocument: 'after' }
       )
       .exec();
 

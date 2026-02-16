@@ -25,6 +25,14 @@ export class PropertyService {
     return this.propertyModel.find({ owner: ownerId }).populate('owner', 'name lastName email phoneNumber').exec();
   }
 
+  async findForSale() {
+    return this.propertyModel.find({ PropertyType: 'sale' }).populate('owner', 'name lastName email phoneNumber').exec();
+  }
+
+  async findForRent() {
+    return this.propertyModel.find({ PropertyType: 'rent' }).populate('owner', 'name lastName email phoneNumber').exec();
+  }
+
   async findOne(id: string) {
     const property = await this.propertyModel.findById(id).populate('owner', 'name lastName email phoneNumber').exec();
     if (!property) {
@@ -35,7 +43,7 @@ export class PropertyService {
 
   async update(id: string, updatePropertyDto: UpdatePropertyDto) {
     const updated = await this.propertyModel
-      .findByIdAndUpdate(id, updatePropertyDto, { new: true })
+      .findByIdAndUpdate(id, updatePropertyDto, { returnDocument: 'after' })
       .exec();
 
     if (!updated) {
@@ -58,7 +66,7 @@ export class PropertyService {
 
   async updateImage(id: string, imagePath: string) {
     const updated = await this.propertyModel
-      .findByIdAndUpdate(id, { propertyimage: imagePath }, { new: true })
+      .findByIdAndUpdate(id, { propertyimage: imagePath }, { returnDocument: 'after' })
       .exec();
 
     if (!updated) {
@@ -70,7 +78,7 @@ export class PropertyService {
 
   async updateDocument(id: string, documentPath: string) {
     const updated = await this.propertyModel
-      .findByIdAndUpdate(id, { Registrationdocument: documentPath }, { new: true })
+      .findByIdAndUpdate(id, { Registrationdocument: documentPath }, { returnDocument: 'after' })
       .exec();
 
     if (!updated) {

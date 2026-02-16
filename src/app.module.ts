@@ -46,7 +46,7 @@ import { PropertyModule } from './property/property.module';
       inject: [ConfigService],
     })
 
-      ,AuthModule, UsersModule],
+      ,AuthModule, UsersModule, CasesModule, PropertyModule],
   controllers: [AppController],
   providers: [AppService],
 })

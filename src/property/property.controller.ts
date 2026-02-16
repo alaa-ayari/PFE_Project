@@ -55,6 +55,16 @@ export class PropertyController {
     return this.propertyService.findAll();
   }
 
+  @Get('for-sale')
+  findForSale() {
+    return this.propertyService.findForSale();
+  }
+
+  @Get('for-rent')
+  findForRent() {
+    return this.propertyService.findForRent();
+  }
+
   @Get('my-properties')
   getMyProperties(@GetUser('userId') userId: string) {
     return this.propertyService.findByOwner(userId);
