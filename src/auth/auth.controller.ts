@@ -7,6 +7,8 @@ import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { GoogleAuthDto } from './dto/google-auth.dto';
+import { SendOtpDto } from './dto/send-otp.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -67,5 +69,23 @@ async googleAuth(@Body() googleAuthDto: GoogleAuthDto) {
     googleAuthDto.role
   );
 }
+
+  @Post('send-otp')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  async sendOtp(@Request() req, @Body() sendOtpDto: SendOtpDto) {
+    return this.authService.sendOtp(req.user.userId, sendOtpDto.phoneNumber);
+  }
+
+  @Post('verify-otp')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  async verifyOtp(@Request() req, @Body() verifyOtpDto: VerifyOtpDto) {
+    return this.authService.verifyOtp(
+      req.user.userId,
+      verifyOtpDto.phoneNumber,
+      verifyOtpDto.code,
+    );
+  }
 
 }

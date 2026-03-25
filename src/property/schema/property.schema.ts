@@ -25,8 +25,11 @@ export class Property extends Document {
   @Prop({ required: false })
   contractId: string;
 
+  @Prop({ required: false, type: [String], default: [] })
+  propertyimages: string[];
+
   @Prop({ required: false })
-  propertyimage: string;
+  description: string;
 
   @Prop({ required: false })
   Registrationdocument: string;

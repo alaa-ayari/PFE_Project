@@ -64,14 +64,30 @@ export class PropertyService {
     };
   }
 
-  async updateImage(id: string, imagePath: string) {
-    const updated = await this.propertyModel
-      .findByIdAndUpdate(id, { propertyimage: imagePath }, { returnDocument: 'after' })
-      .exec();
-
-    if (!updated) {
+  async addImages(id: string, imagePaths: string[]) {
+    const property = await this.propertyModel.findById(id).exec();
+    if (!property) {
       throw new NotFoundException(`Property with ID ${id} not found`);
     }
+
+    // Migrate: old documents may have propertyimage (string) or propertyimages (string)
+    const raw = property.toObject() as any;
+    let existing: string[] = [];
+    if (Array.isArray(raw.propertyimages)) {
+      existing = raw.propertyimages;
+    } else if (typeof raw.propertyimages === 'string' && raw.propertyimages) {
+      existing = [raw.propertyimages];
+    } else if (typeof raw.propertyimage === 'string' && raw.propertyimage) {
+      existing = [raw.propertyimage];
+    }
+
+    const updated = await this.propertyModel
+      .findByIdAndUpdate(
+        id,
+        { $set: { propertyimages: [...existing, ...imagePaths] } },
+        { returnDocument: 'after' },
+      )
+      .exec();
 
     return updated;
   }

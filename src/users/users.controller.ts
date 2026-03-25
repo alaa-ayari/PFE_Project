@@ -4,6 +4,7 @@ import { UsersService } from './users.service';
 import { OcrService } from './ocr.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 import { RolesGuard } from '../config/guard/role.guard';
 import { Roles } from '../config/decorator/role.decorators';
@@ -22,7 +23,6 @@ export class UsersController {
   }
 
   @Get()
-
   findAll() {
     return this.usersService.findAll();
   }
@@ -31,6 +31,16 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   findOne(@Param('id') id: string) {
     return this.usersService.findOne(id);
+  }
+
+  // PATCH /users/:id/profile — update name, lastName, email, phoneNumber
+  @Patch(':id/profile')
+  @UseGuards(JwtAuthGuard)
+  updateProfile(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserProfileDto,
+  ) {
+    return this.usersService.updateProfile(id, dto);
   }
 
   @Patch(':id')

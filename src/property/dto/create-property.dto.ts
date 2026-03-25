@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsOptional, IsString, IsMongoId } from 'class-validator';
+import { IsArray, IsEnum, IsNotEmpty, IsOptional, IsString, IsMongoId } from 'class-validator';
 import { PropertyType, PropertyStatus } from '../schema/property_enum';
 
 export class CreatePropertyDto {
@@ -31,8 +31,13 @@ export class CreatePropertyDto {
   contractId?: string;
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  propertyimages?: string[];
+
+  @IsOptional()
   @IsString()
-  propertyimage?: string;
+  description?: string;
 
   @IsOptional()
   @IsString()

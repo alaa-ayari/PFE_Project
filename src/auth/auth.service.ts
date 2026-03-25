@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, GoneException, HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
 import * as bcrypt from 'bcrypt';
@@ -9,7 +9,9 @@ import { EmailService } from '../config/email.service';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { RefreshToken } from './schemas/refresh-token.schema';
+import { OtpCode } from './schemas/otp-code.schema';
 import { GoogleAuthService, GoogleUserPayload } from './google-auth.service';
+import { SmsService } from '../sms/sms.service';
 import { UserRole } from '../users/schema/Role_enum';
 
 @Injectable()
@@ -19,7 +21,9 @@ export class AuthService {
     private jwtService: JwtService,
     private emailService: EmailService,
     private googleAuthService: GoogleAuthService,
+    private smsService: SmsService,
     @InjectModel(RefreshToken.name) private refreshTokenModel: Model<RefreshToken>,
+    @InjectModel(OtpCode.name) private otpCodeModel: Model<OtpCode>,
   ) {}
 
   async signup(createUserDto: CreateUserDto) {
@@ -375,5 +379,87 @@ async googleAuth(idToken?: string, accessToken?: string, role?: UserRole) {
       isNewUser: true,
       message: 'Account created successfully with Google',
     };
+  }
+
+  // ── OTP Phone Verification ──────────────────────────────────────────────
+
+  async sendOtp(userId: string, phoneNumber: string) {
+    // Rate limit: max 3 send requests per phone number per 10 minutes
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const recentCount = await this.otpCodeModel.countDocuments({
+      phoneNumber,
+      createdAt: { $gte: tenMinutesAgo },
+    }).exec();
+
+    if (recentCount >= 3) {
+      throw new HttpException(
+        'Too many OTP requests. Please try again later.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    // Generate 6-digit code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Hash the code with SHA-256 before storing
+    const hashedCode = crypto.createHash('sha256').update(code).digest('hex');
+
+    // Delete any previous OTP record for this user
+    await this.otpCodeModel.deleteMany({ userId }).exec();
+
+    // Store in DB
+    await this.otpCodeModel.create({
+      userId,
+      phoneNumber,
+      hashedCode,
+      attempts: 0,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+    });
+
+    // Send SMS
+    await this.smsService.sendSms(
+      phoneNumber,
+      `Your Aqari verification code is: ${code}`,
+    );
+
+    return { message: 'OTP sent successfully' };
+  }
+
+  async verifyOtp(userId: string, phoneNumber: string, code: string) {
+    const otpRecord = await this.otpCodeModel.findOne({ userId }).exec();
+
+    if (!otpRecord) {
+      throw new GoneException('No OTP record found. Please request a new code.');
+    }
+
+    if (otpRecord.expiresAt < new Date()) {
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      throw new GoneException('OTP has expired. Please request a new code.');
+    }
+
+    // Constant-time comparison using crypto.timingSafeEqual
+    const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
+    const storedHashBuffer = Buffer.from(otpRecord.hashedCode, 'hex');
+    const submittedHashBuffer = Buffer.from(submittedHash, 'hex');
+
+    const isValid = crypto.timingSafeEqual(storedHashBuffer, submittedHashBuffer);
+
+    if (isValid) {
+      // Delete the OTP record on success
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      return { verified: true };
+    }
+
+    // Increment attempts
+    otpRecord.attempts += 1;
+
+    if (otpRecord.attempts >= 5) {
+      // Max attempts reached — invalidate
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      return { verified: false };
+    }
+
+    await otpRecord.save();
+    return { verified: false };
   }
 }

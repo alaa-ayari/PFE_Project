@@ -46,6 +46,12 @@ export class User extends Document  {
     phoneNumber: string;
     @Prop()
     profileImageUrl: string;
+    @Prop({ default: false })
+    isVerified: boolean;
+    @Prop({ required: false, type: Number })
+    latitude: number;
+    @Prop({ required: false, type: Number })
+    longitude: number;
     @Prop({ required: false })
     googleId: string;
     @Prop({ default: 'local' })

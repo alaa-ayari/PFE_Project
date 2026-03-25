@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
 import { EmailService } from 'src/config/email.service';
 import { User } from './schema/user.schema';
 import { Model } from 'mongoose';
@@ -67,6 +68,39 @@ export class UsersService {
       throw new NotFoundException(`User with ID ${id} not found`);
     }
     const { password, ...result } = user.toObject();
+    return result;
+  }
+
+  async updateProfile(
+    id: string,
+    dto: UpdateUserProfileDto,
+  ) {
+    const user = await this.userModel.findById(id).exec();
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+
+    if (dto.email) {
+      const existing = await this.userModel
+        .findOne({ email: dto.email, _id: { $ne: id } })
+        .exec();
+      if (existing) {
+        throw new ConflictException('Email already in use');
+      }
+    }
+
+    const updateFields: Record<string, any> = {};
+    if (dto.name !== undefined)           updateFields.name           = dto.name;
+    if (dto.lastName !== undefined)       updateFields.lastName       = dto.lastName;
+    if (dto.email !== undefined)          updateFields.email          = dto.email;
+    if (dto.phoneNumber !== undefined)    updateFields.phoneNumber    = dto.phoneNumber;
+    if (dto.identitynumber !== undefined) updateFields.identitynumber = dto.identitynumber;
+
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, updateFields, { returnDocument: 'after' })
+      .exec();
+
+    const { password, ...result } = updated!.toObject();
     return result;
   }
 

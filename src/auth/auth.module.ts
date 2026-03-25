@@ -7,8 +7,10 @@ import { JwtStrategy } from './jwt/jwt';
 import { EmailModule } from '../config/email.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { RefreshToken, RefreshTokenSchema } from './schemas/refresh-token.schema';
+import { OtpCode, OtpCodeSchema } from './schemas/otp-code.schema';
 import { GoogleAuthService } from './google-auth.service';
 import { ConfigModule } from '@nestjs/config';
+import { SmsModule } from '../sms/sms.module';
 
 @Module({
   imports: [
@@ -16,8 +18,10 @@ import { ConfigModule } from '@nestjs/config';
     PassportModule,
     EmailModule,
     ConfigModule,
+    SmsModule,
     MongooseModule.forFeature([
       { name: RefreshToken.name, schema: RefreshTokenSchema },
+      { name: OtpCode.name, schema: OtpCodeSchema },
     ]),
   ],
   controllers: [AuthController],

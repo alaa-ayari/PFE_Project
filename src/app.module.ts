@@ -10,6 +10,7 @@ import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
 import { CasesModule } from './cases/cases.module';
 import { PropertyModule } from './property/property.module';
+import { LawyersModule } from './lawyers/lawyers.module';
 
 
   @Module({
@@ -46,7 +47,7 @@ import { PropertyModule } from './property/property.module';
       inject: [ConfigService],
     })
 
-      ,AuthModule, UsersModule, CasesModule, PropertyModule],
+      ,AuthModule, UsersModule, CasesModule, PropertyModule, LawyersModule],
   controllers: [AppController],
   providers: [AppService],
 })

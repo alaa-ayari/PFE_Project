@@ -1,5 +1,5 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, HttpStatus, UseInterceptors, UploadedFile, BadRequestException, UseGuards } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, BadRequestException, UseGuards } from '@nestjs/common';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { PropertyService } from './property.service';
@@ -16,7 +16,7 @@ export class PropertyController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @UseInterceptors(
-    FileInterceptor('image', {
+    FilesInterceptor('images', 10, {
       storage: diskStorage({
         destination: './uploads/properties/images',
         filename: (req, file, cb) => {
@@ -39,13 +39,13 @@ export class PropertyController {
   create(
     @Body() createPropertyDto: CreatePropertyDto,
     @GetUser('userId') userId: string,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFiles() files?: Express.Multer.File[],
   ) {
-    // Set the authenticated user as the owner
     createPropertyDto.owner = userId;
-    
-    if (file) {
-      createPropertyDto.propertyimage = `/uploads/properties/images/${file.filename}`;
+    if (files && files.length > 0) {
+      createPropertyDto.propertyimages = files.map(
+        (f) => `/uploads/properties/images/${f.filename}`,
+      );
     }
     return this.propertyService.create(createPropertyDto);
   }
@@ -99,7 +99,7 @@ export class PropertyController {
    */
   @Post(':id/upload-image')
   @UseInterceptors(
-    FileInterceptor('image', {
+    FilesInterceptor('images', 10, {
       storage: diskStorage({
         destination: './uploads/properties/images',
         filename: (req, file, cb) => {
@@ -121,20 +121,20 @@ export class PropertyController {
   )
   async uploadPropertyImage(
     @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
   ) {
-    if (!file) {
-      throw new BadRequestException('Please upload an image file');
+    if (!files || files.length === 0) {
+      throw new BadRequestException('Please upload at least one image file');
     }
 
-    const imagePath = `/uploads/properties/images/${file.filename}`;
-    const updatedProperty = await this.propertyService.updateImage(id, imagePath);
+    const imagePaths = files.map((f) => `/uploads/properties/images/${f.filename}`);
+    const updatedProperty = await this.propertyService.addImages(id, imagePaths);
 
     return {
       success: true,
-      imagePath,
+      imagePaths,
       property: updatedProperty,
-      message: 'Property image uploaded successfully',
+      message: 'Property images uploaded successfully',
     };
   }
 
