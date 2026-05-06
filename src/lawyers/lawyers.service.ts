@@ -8,6 +8,8 @@ import { Model } from 'mongoose';
 import { User } from '../users/schema/user.schema';
 import { UserRole } from '../users/schema/Role_enum';
 import { UpdateLawyerProfileDto } from './dto/update-lawyer-profile.dto';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class LawyersService {
@@ -81,6 +83,44 @@ export class LawyersService {
       .findByIdAndUpdate(id, { isVerified }, { returnDocument: 'after' })
       .exec();
 
+    const { password, ...result } = updated!.toObject();
+    return result;
+  }
+
+  // ── Signature ──────────────────────────────────────────────────────────────
+
+  async updateSignatureUrl(id: string, signatureUrl: string) {
+    const lawyer = await this.userModel.findById(id).exec();
+    if (!lawyer) {
+      throw new NotFoundException(`Lawyer with ID ${id} not found`);
+    }
+    if (lawyer.role !== UserRole.LAWYER) {
+      throw new BadRequestException(`User with ID ${id} is not a lawyer`);
+    }
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, { signatureUrl }, { returnDocument: 'after' })
+      .exec();
+    const { password, ...result } = updated!.toObject();
+    return result;
+  }
+
+  async deleteSignature(id: string) {
+    const lawyer = await this.userModel.findById(id).exec();
+    if (!lawyer) {
+      throw new NotFoundException(`Lawyer with ID ${id} not found`);
+    }
+    if (lawyer.role !== UserRole.LAWYER) {
+      throw new BadRequestException(`User with ID ${id} is not a lawyer`);
+    }
+    if (lawyer.signatureUrl) {
+      const filePath = path.join(process.cwd(), lawyer.signatureUrl);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, { signatureUrl: null }, { returnDocument: 'after' })
+      .exec();
     const { password, ...result } = updated!.toObject();
     return result;
   }

@@ -8,9 +8,13 @@ import config from './config/config';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ScheduleModule } from '@nestjs/schedule';
 import { CasesModule } from './cases/cases.module';
 import { PropertyModule } from './property/property.module';
 import { LawyersModule } from './lawyers/lawyers.module';
+import { ApplicationsModule } from './applications/applications.module';
+import { ContractsModule } from './contracts/contracts.module';
+import { RentalsModule } from './rentals/rentals.module';
 
 
   @Module({
@@ -28,6 +32,7 @@ import { LawyersModule } from './lawyers/lawyers.module';
 
 
     }),
+    ScheduleModule.forRoot(),
     JwtModule.registerAsync({
       global: true, 
       imports: [ConfigModule],
@@ -47,7 +52,7 @@ import { LawyersModule } from './lawyers/lawyers.module';
       inject: [ConfigService],
     })
 
-      ,AuthModule, UsersModule, CasesModule, PropertyModule, LawyersModule],
+      ,AuthModule, UsersModule, CasesModule, PropertyModule, LawyersModule, ApplicationsModule, ContractsModule, RentalsModule],
   controllers: [AppController],
   providers: [AppService],
 })

@@ -46,6 +46,8 @@ export class User extends Document  {
     phoneNumber: string;
     @Prop()
     profileImageUrl: string;
+    @Prop({ required: false })
+    fullName: string;
     @Prop({ default: false })
     isVerified: boolean;
     @Prop({ required: false, type: Number })
@@ -53,10 +55,34 @@ export class User extends Document  {
     @Prop({ required: false, type: Number })
     longitude: number;
     @Prop({ required: false })
+    dateOfBirth: string;
+    @Prop({ required: false })
+    placeOfBirth: string;
+    @Prop({ required: false })
+    address: string;
+    @Prop({ required: false })
+    issueDate: string;
+    @Prop({ required: false })
+    issuePlace: string;
+    @Prop({ required: false })
+    barcodeNumber: string;
+    @Prop({ required: false })
+    lineage: string;
+    @Prop({ required: false, default: 'not_started' })
+    verificationStatus: string;
+    @Prop({ required: false })
     googleId: string;
     @Prop({ default: 'local' })
     authProvider: string; // 'local', 'google', or 'both'
     @Prop({ type: [DeviceSchema], default: [] })
     devices: Device[];
+    @Prop({ required: false, default: null })
+    signatureUrl: string;
+    @Prop({ default: false })
+    faceRegistered: boolean;
+    @Prop({ type: [{ type: MongooseSchema.Types.ObjectId, ref: 'Property' }], default: [] })
+    favorites: Types.ObjectId[];
+    @Prop({ required: false, default: null })
+    fcmToken: string;
 }
 export const UserSchema = SchemaFactory.createForClass(User);

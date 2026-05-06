@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
+  Post,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -68,6 +70,53 @@ export class LawyersController {
       ? `/uploads/lawyers/pictures/${picture.filename}`
       : undefined;
     return this.lawyersService.updateProfile(id, dto, picturePath);
+  }
+
+  // POST /lawyers/:id/signature — upload lawyer signature
+  @Post(':id/signature')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('signature', {
+      storage: diskStorage({
+        destination: './uploads/lawyers/signatures',
+        filename: (req, file, cb) => {
+          const random = Array(32)
+            .fill(null)
+            .map(() => Math.round(Math.random() * 16).toString(16))
+            .join('');
+          cb(null, `${random}${extname(file.originalname)}`);
+        },
+      }),
+      fileFilter: (req, file, cb) => {
+        if (!file.mimetype.match(/\/(png)$/)) {
+          return cb(
+            new BadRequestException('Only PNG files are allowed'),
+            false,
+          );
+        }
+        cb(null, true);
+      },
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  async uploadSignature(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('Please upload a PNG signature file');
+    }
+    const signatureUrl = `/uploads/lawyers/signatures/${file.filename}`;
+    await this.lawyersService.updateSignatureUrl(id, signatureUrl);
+    return { signatureUrl };
+  }
+
+  // DELETE /lawyers/:id/signature — delete lawyer signature
+  @Delete(':id/signature')
+  @UseGuards(JwtAuthGuard)
+  async deleteSignature(@Param('id') id: string) {
+    await this.lawyersService.deleteSignature(id);
+    return { message: 'Signature deleted successfully' };
   }
 
   // PATCH /lawyers/:id/verify — set isVerified true/false (JWT required)

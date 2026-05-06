@@ -8,6 +8,8 @@ import { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { InjectModel } from '@nestjs/mongoose';
 import { UserRole } from './schema/Role_enum';
+import * as fs from 'fs';
+import * as path from 'path';
 
 export interface CreateGoogleUserDto {
   name: string;
@@ -321,6 +323,70 @@ export class UsersService {
     }
 
     const { password, ...result } = updated.toObject();
+    return result;
+  }
+
+  async updateSignatureUrl(id: string, signatureUrl: string) {
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, { signatureUrl }, { returnDocument: 'after' })
+      .exec();
+    if (!updated) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+    const { password, ...result } = updated.toObject();
+    return result;
+  }
+
+  async updateFcmToken(userId: string, fcmToken: string | null) {
+    await this.userModel.findByIdAndUpdate(userId, { fcmToken }).exec();
+  }
+
+  async getFcmToken(userId: string): Promise<string | null> {
+    const user = await this.userModel.findById(userId).select('fcmToken').exec();
+    return user?.fcmToken ?? null;
+  }
+
+  async getFavoriteIds(userId: string): Promise<string[]> {
+    const user = await this.userModel.findById(userId).select('favorites').exec();
+    if (!user) throw new NotFoundException(`User with ID ${userId} not found`);
+    return (user.favorites || []).map((id) => id.toString());
+  }
+
+  async addFavorite(userId: string, propertyId: string): Promise<string[]> {
+    const updated = await this.userModel.findByIdAndUpdate(
+      userId,
+      { $addToSet: { favorites: propertyId } },
+      { returnDocument: 'after' },
+    ).exec();
+    if (!updated) throw new NotFoundException(`User with ID ${userId} not found`);
+    return (updated.favorites || []).map((id) => id.toString());
+  }
+
+  async removeFavorite(userId: string, propertyId: string): Promise<string[]> {
+    const updated = await this.userModel.findByIdAndUpdate(
+      userId,
+      { $pull: { favorites: propertyId } },
+      { returnDocument: 'after' },
+    ).exec();
+    if (!updated) throw new NotFoundException(`User with ID ${userId} not found`);
+    return (updated.favorites || []).map((id) => id.toString());
+  }
+
+  async deleteSignature(id: string) {
+    const user = await this.userModel.findById(id).exec();
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+    if (user.signatureUrl) {
+      const filePath = path.join(process.cwd(), user.signatureUrl);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, { signatureUrl: null }, { returnDocument: 'after' })
+      .exec();
+    const { password, ...result } = updated!.toObject();
     return result;
   }
 }
