@@ -1,0 +1,466 @@
+import { BadRequestException, GoneException, HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { UsersService } from '../users/users.service';
+import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
+import { CreateUserDto } from '../users/dto/create-user.dto';
+import { LoginDto } from './dto/login.dto';
+import { EmailService } from '../config/email.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { RefreshToken } from './schemas/refresh-token.schema';
+import { OtpCode } from './schemas/otp-code.schema';
+import { GoogleAuthService, GoogleUserPayload } from './google-auth.service';
+import { SmsService } from '../sms/sms.service';
+import { UserRole } from '../users/schema/Role_enum';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private usersService: UsersService,
+    private jwtService: JwtService,
+    private emailService: EmailService,
+    private googleAuthService: GoogleAuthService,
+    private smsService: SmsService,
+    @InjectModel(RefreshToken.name) private refreshTokenModel: Model<RefreshToken>,
+    @InjectModel(OtpCode.name) private otpCodeModel: Model<OtpCode>,
+  ) {}
+
+  async signup(createUserDto: CreateUserDto) {
+    const user = await this.usersService.create(createUserDto);
+    return {
+      user,
+      message: 'user created !',
+    };
+  }
+
+  async login(loginDto: LoginDto) {
+    const user = await this.validateUser(loginDto.email, loginDto.password);
+    
+    // Save device info if provided
+    if (loginDto.deviceId) {
+      await this.usersService.updateDeviceInfo(user._id.toString(), {
+        deviceId: loginDto.deviceId,
+        deviceModel: loginDto.deviceModel,
+        platform: loginDto.platform,
+        deviceName: loginDto.deviceName,
+        ipAddress: loginDto.ipAddress,
+      });
+    }
+
+    const payload = {
+      userId: user._id.toString(),
+      email: user.email,
+      role: user.role,
+    };
+    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
+    const refreshToken = await this.generateRefreshToken(user._id.toString());
+    // H-08: fire-and-forget — a slow SMTP server should not slow the login
+    // response. Failures are logged but do not propagate.
+    this.emailService
+      .sendMail(
+        user.email,
+        'Login Notification',
+        `<h2>Hello ${user.name},</h2><p>You have successfully logged in to your account.</p>`,
+      )
+      .catch((error) => console.error('mail failed to send:', error));
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        lastName: user.lastName,
+        role: user.role,
+      },
+    };
+  }
+
+  async refresh(refreshToken: string) {
+    const storedToken = await this.refreshTokenModel.findOne({ 
+      token: refreshToken,
+      isRevoked: false,
+    }).exec();
+    if (!storedToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    if (storedToken.expiresAt < new Date()) {
+      await this.refreshTokenModel.findByIdAndDelete(storedToken._id);
+      throw new UnauthorizedException('Refresh token expired');
+    }
+    const user = await this.usersService.findOne(storedToken.userId.toString());
+    const payload = {
+      userId: user._id,
+      email: user.email,
+      role: user.role,
+    };
+    const newAccessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
+    const newRefreshToken = await this.generateRefreshToken(storedToken.userId.toString());
+    await this.refreshTokenModel.findByIdAndUpdate(storedToken._id, {
+      isRevoked: true,
+      replacedByToken: newRefreshToken,
+    });
+    return {
+      access_token: newAccessToken,
+      refresh_token: newRefreshToken,
+    };
+  }
+
+  async logout(userId: string, refreshToken: string) {
+    await this.refreshTokenModel.updateMany(
+      { userId, token: refreshToken },
+      { isRevoked: true }
+    );
+
+    return { message: 'Logged out !' };
+  }
+
+ 
+
+  private async generateRefreshToken(userId: string): Promise<string> {
+    const token = crypto.randomBytes(64).toString('hex');
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
+
+    await this.refreshTokenModel.create({
+      userId,
+      token,
+      expiresAt,
+      isRevoked: false,
+    });
+
+    return token;
+  }
+
+  async validateUser(email: string, password: string) {
+    const user = await this.usersService.findByEmail(email);
+    
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials !');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    return user;
+  }
+
+ async forgotPassword(email: string) {
+  const user = await this.usersService.findByEmail(email);
+  
+  if (!user) {
+    return { message: 'a verification code has been sent.' };
+  }
+
+  // M-06: cryptographically secure 6-digit code; Math.random is biased.
+  const resetCode = crypto.randomInt(100000, 1_000_000).toString();
+
+
+  const resetToken = this.jwtService.sign(
+    { userId: user._id.toString(), code: resetCode, type: 'password-reset' },
+    { expiresIn: '15m' }
+  );
+  await this.refreshTokenModel.create({
+    userId: user._id,
+    token: resetToken,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000), 
+    isRevoked: false,
+  });
+
+  const emailHtml = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #333;">Password Reset Request</h2>
+      <p>Hello ${user.name},</p>
+      <p>You requested to reset your password. Use the verification code below:</p>
+      <div style="background-color: #f4f4f4; padding: 20px; text-align: center; margin: 20px 0; border-radius: 5px;">
+        <h1 style="color: #007bff; letter-spacing: 5px; margin: 0; font-size: 36px;">${resetCode}</h1>
+      </div>
+      <p>This code will expire in <strong>15 minutes</strong>.</p>
+      <p>If you didn't request this, please ignore this email.</p>
+      <p style="color: #666; font-size: 12px; margin-top: 30px;">For security reasons, never share this code with anyone.</p>
+    </div>
+  `;
+
+  try {
+    await this.emailService.sendMail(user.email, 'Password Reset Code', emailHtml);
+  } catch (error) {
+    console.error('Failed to send reset email:', error);
+    throw new BadRequestException('Failed to send reset email');
+  }
+
+  return { message: 'a verification code has been sent.' };
+}
+
+async resetPassword(code: string, newPassword: string) {
+  const activeTokens = await this.refreshTokenModel.find({
+    isRevoked: false,
+    expiresAt: { $gt: new Date() },
+  }).exec();
+
+  let foundToken: { payload: any; tokenDoc: any } | null = null;
+
+  for (const token of activeTokens) {
+    try {
+      const payload = this.jwtService.verify(token.token);
+      if (payload.type === 'password-reset' && payload.code === code) {
+        foundToken = { payload, tokenDoc: token };
+        break;
+      }
+    } catch (error) {
+      continue;
+    }
+  }
+
+  if (!foundToken) {
+    throw new BadRequestException('Invalid or expired verification code');
+  }
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  
+
+  await this.usersService.updatePassword(foundToken.payload.userId, hashedPassword);
+
+
+  await this.refreshTokenModel.findByIdAndUpdate(foundToken.tokenDoc._id, {
+    isRevoked: true,
+  });
+
+
+  const user = await this.usersService.findOne(foundToken.payload.userId);
+  const emailHtml = `
+    <h2>Password Reset Successful</h2>
+    <p>Hello ${user.name},</p>
+    <p>Your password has been successfully reset.</p>
+    <p>If you didn't make this change, please contact support immediately.</p>
+  `;
+
+  try {
+    await this.emailService.sendMail(user.email, 'Password Reset Successful', emailHtml);
+  } catch (error) {
+    console.error('Failed to send confirmation email:', error);
+  }
+
+  return { message: 'Password reset successful' };
+}
+
+  /**
+   * Google Sign-In/Sign-Up with automatic account linking
+   * - If user exists with same email → Link Google account
+   * - If user doesn't exist → Create new account with Google data
+   */
+async googleAuth(idToken?: string, accessToken?: string, role?: UserRole) {
+  let googleUser: GoogleUserPayload;
+
+  // Verify based on what token is provided
+  if (idToken) {
+    // Mobile: verify ID token
+    googleUser = await this.googleAuthService.verifyIdToken(idToken);
+  } else if (accessToken) {
+    // Web: verify access token
+    googleUser = await this.googleAuthService.verifyAccessToken(accessToken);
+  } else {
+    throw new BadRequestException('Either idToken or accessToken must be provided');
+  }
+
+  // Check if user already exists with this email
+  const existingUser = await this.usersService.findByEmail(googleUser.email);
+  
+  if (existingUser) {
+    // User exists - link Google account if not already linked
+    return this.linkGoogleAccount(existingUser, googleUser);
+  } else {
+    // New user - create account with Google data
+    return this.createGoogleUser(googleUser, role);
+  }
+  
+}
+  /**
+   * Link Google account to existing user
+   */
+  private async linkGoogleAccount(existingUser: any, googleUser: GoogleUserPayload) {
+    // Check if already linked with a different Google account
+    if (existingUser.googleId && existingUser.googleId !== googleUser.googleId) {
+      throw new BadRequestException('This email is already linked to a different Google account');
+    }
+
+    // Link Google account if not already linked
+    if (!existingUser.googleId) {
+      const authProvider = existingUser.password ? 'both' : 'google';
+      await this.usersService.linkGoogleAccount(
+        existingUser._id.toString(),
+        googleUser.googleId,
+        authProvider,
+        googleUser.profileImageUrl
+      );
+    }
+
+    // Generate tokens and return login response
+    const payload = {
+      userId: existingUser._id.toString(),
+      email: existingUser.email,
+      role: existingUser.role,
+    };
+    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
+    const refreshToken = await this.generateRefreshToken(existingUser._id.toString());
+
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user: {
+        id: existingUser._id,
+        email: existingUser.email,
+        name: existingUser.name,
+        lastName: existingUser.lastName,
+        role: existingUser.role,
+        profileImageUrl: existingUser.profileImageUrl || googleUser.profileImageUrl,
+      },
+      isNewUser: false,
+      accountLinked: !existingUser.googleId,
+      message: existingUser.googleId 
+        ? 'Logged in with Google successfully' 
+        : 'Google account linked to your existing account',
+    };
+  }
+
+  /**
+   * Create new user with Google data
+   */
+  private async createGoogleUser(googleUser: GoogleUserPayload, role?: UserRole) {
+    if (!role) {
+      throw new BadRequestException('Role is required for new users signing up with Google');
+    }
+
+    const newUser = await this.usersService.createGoogleUser({
+      name: googleUser.name,
+      lastName: googleUser.lastName,
+      email: googleUser.email,
+      googleId: googleUser.googleId,
+      profileImageUrl: googleUser.profileImageUrl,
+      role: role,
+      authProvider: 'google',
+    });
+
+    // Send welcome email
+    try {
+      await this.emailService.sendMail(
+        newUser.email,
+        'Welcome to Our Platform',
+        `<h2>Hello ${newUser.name} ${newUser.lastName},</h2>
+        <p>Welcome! Your account has been created successfully using Google Sign-In.</p>
+        <p>Your role: <strong>${newUser.role}</strong></p>
+        <p>Best regards,<br/>The Team</p>`
+      );
+    } catch (error) {
+      console.error('Failed to send welcome email:', error);
+    }
+
+    // Generate tokens
+    const payload = {
+      userId: newUser._id.toString(),
+      email: newUser.email,
+      role: newUser.role,
+    };
+    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
+    const refreshToken = await this.generateRefreshToken(newUser._id.toString());
+
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      user: {
+        id: newUser._id,
+        email: newUser.email,
+        name: newUser.name,
+        lastName: newUser.lastName,
+        role: newUser.role,
+        profileImageUrl: newUser.profileImageUrl,
+      },
+      isNewUser: true,
+      message: 'Account created successfully with Google',
+    };
+  }
+
+  // ── OTP Phone Verification ──────────────────────────────────────────────
+
+  async sendOtp(userId: string, phoneNumber: string) {
+    // Rate limit: max 3 send requests per phone number per 10 minutes
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const recentCount = await this.otpCodeModel.countDocuments({
+      phoneNumber,
+      createdAt: { $gte: tenMinutesAgo },
+    }).exec();
+
+    if (recentCount >= 3) {
+      throw new HttpException(
+        'Too many OTP requests. Please try again later.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    // M-06: cryptographically secure 6-digit OTP.
+    const code = crypto.randomInt(100000, 1_000_000).toString();
+
+    // Hash the code with SHA-256 before storing
+    const hashedCode = crypto.createHash('sha256').update(code).digest('hex');
+
+    // Delete any previous OTP record for this user
+    await this.otpCodeModel.deleteMany({ userId }).exec();
+
+    // Store in DB
+    await this.otpCodeModel.create({
+      userId,
+      phoneNumber,
+      hashedCode,
+      attempts: 0,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000), // 5 minutes
+    });
+
+    // Send SMS
+    await this.smsService.sendSms(
+      phoneNumber,
+      `Your Aqari verification code is: ${code}`,
+    );
+
+    return { message: 'OTP sent successfully' };
+  }
+
+  async verifyOtp(userId: string, phoneNumber: string, code: string) {
+    const otpRecord = await this.otpCodeModel.findOne({ userId }).exec();
+
+    if (!otpRecord) {
+      throw new GoneException('No OTP record found. Please request a new code.');
+    }
+
+    if (otpRecord.expiresAt < new Date()) {
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      throw new GoneException('OTP has expired. Please request a new code.');
+    }
+
+    // Constant-time comparison using crypto.timingSafeEqual
+    const submittedHash = crypto.createHash('sha256').update(code).digest('hex');
+    const storedHashBuffer = Buffer.from(otpRecord.hashedCode, 'hex');
+    const submittedHashBuffer = Buffer.from(submittedHash, 'hex');
+
+    const isValid = crypto.timingSafeEqual(storedHashBuffer, submittedHashBuffer);
+
+    if (isValid) {
+      // Delete the OTP record on success
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      return { verified: true };
+    }
+
+    // Increment attempts
+    otpRecord.attempts += 1;
+
+    if (otpRecord.attempts >= 5) {
+      // Max attempts reached — invalidate
+      await this.otpCodeModel.deleteOne({ _id: otpRecord._id }).exec();
+      return { verified: false };
+    }
+
+    await otpRecord.save();
+    return { verified: false };
+  }
+}

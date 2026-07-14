@@ -1,0 +1,146 @@
+import {
+  WebSocketGateway,
+  WebSocketServer,
+  SubscribeMessage,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  MessageBody,
+  ConnectedSocket,
+} from '@nestjs/websockets';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Server, Socket } from 'socket.io';
+import * as jwt from 'jsonwebtoken';
+import { Application } from './schema/application.schema';
+import { Property } from '../property/schema/property.schema';
+
+/**
+ * Build the same CORS list used by the HTTP server (H-01). Wildcard +
+ * credentials is a spec violation; lock to CORS_ALLOWED_ORIGINS when set
+ * and reflect any origin only in dev.
+ */
+function buildCorsOrigin(): string[] | boolean {
+  const allowed = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  return allowed.length > 0 ? allowed : true;
+}
+
+@Injectable()
+@WebSocketGateway({
+  namespace: '/chat',
+  cors: { origin: buildCorsOrigin(), credentials: true },
+})
+export class MessagingGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer()
+  server!: Server;
+
+  private readonly logger = new Logger(MessagingGateway.name);
+
+  constructor(
+    private configService: ConfigService,
+    @InjectModel(Application.name) private applicationModel: Model<Application>,
+    @InjectModel(Property.name) private propertyModel: Model<Property>,
+  ) {}
+
+  handleConnection(client: Socket) {
+    const token = client.handshake.auth?.token as string | undefined;
+    if (!token) {
+      client.disconnect();
+      return;
+    }
+    try {
+      const secret = this.configService.get<string>('jwt.secret') ?? process.env.JWT_SECRET ?? '';
+      const payload = jwt.verify(token, secret) as { userId: string };
+      (client as any).userId = payload.userId;
+      // Auto-join the user's personal room so every notification we emit
+      // to `user:<id>` reaches them regardless of which screen they're on.
+      // No client-side joinRoom call is needed for notifications.
+      client.join(`user:${payload.userId}`);
+    } catch {
+      client.disconnect();
+    }
+  }
+
+  handleDisconnect(_client: Socket) {}
+
+  /**
+   * Subscribe to an application's room — but only if the requester is the
+   * applicant, the property owner, or the assigned lawyer (C-05).
+   *
+   * The previous implementation joined any application ID the client sent,
+   * so a malicious client could listen to any conversation in the system.
+   */
+  @SubscribeMessage('joinRoom')
+  async handleJoinRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() applicationId: string,
+  ) {
+    const userId = (client as any).userId as string | undefined;
+    if (!userId || !applicationId || typeof applicationId !== 'string') return;
+
+    try {
+      const app = await this.applicationModel
+        .findById(applicationId)
+        .select('applicant property lawyer')
+        .exec();
+      if (!app) return;
+
+      const applicantId = app.applicant?.toString();
+      const lawyerId = (app as any).lawyer?.toString?.();
+
+      // Owner check needs a property lookup (the property document carries
+      // the ownership pointer; the application only references the property).
+      const property = await this.propertyModel
+        .findById(app.property)
+        .select('owner')
+        .exec();
+      const ownerId = property?.owner?.toString();
+
+      if (userId !== applicantId && userId !== ownerId && userId !== lawyerId) {
+        this.logger.warn(
+          `joinRoom denied: user ${userId} is not a participant of application ${applicationId}`,
+        );
+        return;
+      }
+
+      client.join(applicationId);
+    } catch (e) {
+      this.logger.error(`joinRoom failed for ${applicationId}: ${e}`);
+    }
+  }
+
+  @SubscribeMessage('leaveRoom')
+  handleLeaveRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() applicationId: string,
+  ) {
+    client.leave(applicationId);
+  }
+
+  emitNewMessage(applicationId: string, message: any) {
+    this.server.to(applicationId).emit('newMessage', message);
+  }
+
+  emitApplicationUpdate(applicationId: string, application: any) {
+    this.server.to(applicationId).emit('applicationUpdated', application);
+  }
+
+  emitContractUpdate(applicationId: string, contract: any) {
+    this.server.to(applicationId).emit('contractUpdated', contract);
+  }
+
+  /**
+   * Emit an arbitrary event to one or more users' personal rooms. The user
+   * is auto-joined to `user:<id>` on every socket connect (see
+   * handleConnection), so this reaches them on every screen of the app.
+   */
+  emitToUsers(userIds: string[], event: string, payload: any) {
+    const rooms = userIds.filter(Boolean).map((id) => `user:${id}`);
+    if (rooms.length === 0) return;
+    this.server.to(rooms).emit(event, payload);
+  }
+}

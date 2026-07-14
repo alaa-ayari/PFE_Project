@@ -1,30 +1,33 @@
+// Rental application lifecycle: creation, status FSM, messages, visit and price proposals, lawyer assignment.
+
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { randomUUID } from 'crypto';
 import { Application } from './schema/application.schema';
 import { ApplicationMessage } from './schema/application-message.schema';
 import { Property } from '../property/schema/property.schema';
 import { User } from '../users/schema/user.schema';
-import { CreateApplicationDto, UpdateApplicationStatusDto, CreateMessageDto } from './dto/create-application.dto';
+import {
+  CreateApplicationDto,
+  UpdateApplicationStatusDto,
+  CreateMessageDto,
+  ProposeVisitDto,
+  RespondProposalDto,
+  ProposePriceDto,
+  SetConditionsDto,
+} from './dto/create-application.dto';
 import { NotificationsService } from '../notifications/notifications.service';
-
-const VALID_TRANSITIONS: Record<string, string[]> = {
-  pending: ['under_review', 'rejected', 'cancelled', 'visit_scheduled'],
-  under_review: ['visit_scheduled', 'pre_approved', 'rejected', 'cancelled'],
-  visit_scheduled: ['pre_approved', 'rejected', 'cancelled'],
-  pre_approved: ['accepted', 'rejected', 'cancelled'],
-  accepted: ['negotiation', 'rejected'],
-  negotiation: ['awaiting_lawyer'],
-  awaiting_lawyer: ['contract_drafting'],
-  contract_drafting: [],
-  rejected: [],
-  cancelled: [],
-};
+import { MessagingGateway } from './messaging.gateway';
+import { HederaService } from '../hedera/hedera.service';
+import { VALID_TRANSITIONS, STATUS_LABELS as _STATUS_LABELS } from './application-status.constants';
+import { UserRole } from '../users/schema/Role_enum';
 
 const PROPERTY_POPULATE = {
   path: 'property',
@@ -40,26 +43,20 @@ const APPLICANT_POPULATE = {
   select: 'name lastName email phoneNumber profileImageUrl identitynumber dateOfBirth placeOfBirth address issueDate issuePlace signatureUrl faceRegistered isVerified',
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  under_review: 'Under Review',
-  visit_scheduled: 'Visit Scheduled',
-  pre_approved: 'Pre-Approved',
-  accepted: 'Accepted',
-  negotiation: 'In Negotiation',
-  awaiting_lawyer: 'Awaiting Lawyer',
-  contract_drafting: 'Contract Drafting',
-  rejected: 'Rejected',
-  cancelled: 'Cancelled',
-};
+const STATUS_LABELS = _STATUS_LABELS;
 
 @Injectable()
 export class ApplicationsService {
+  private readonly logger = new Logger(ApplicationsService.name);
+
   constructor(
     @InjectModel(Application.name) private applicationModel: Model<Application>,
     @InjectModel(ApplicationMessage.name) private messageModel: Model<ApplicationMessage>,
     @InjectModel(Property.name) private propertyModel: Model<Property>,
     @InjectModel(User.name) private userModel: Model<User>,
     private readonly notificationsService: NotificationsService,
+    private readonly messagingGateway: MessagingGateway,
+    private readonly hederaService: HederaService,
   ) {}
 
   async create(userId: string, dto: CreateApplicationDto) {
@@ -89,7 +86,16 @@ export class ApplicationsService {
     });
     const saved = await application.save();
 
-    // Notify the property owner about the new application
+    if (this.hederaService.isEnabled) {
+      this.hederaService
+        .createTopic(`Aqari Application - ${saved._id}`)
+        .then(async (topicId) => {
+          await this.applicationModel.findByIdAndUpdate(saved._id, { hcsTopicId: topicId });
+          this.logger.log(`Application ${saved._id} bound to HCS topic ${topicId}`);
+        })
+        .catch((e) => this.logger.error(`Topic creation failed for app ${saved._id}: ${e}`));
+    }
+
     const ownerId = property.owner.toString();
     this.userModel.findById(ownerId).select('fcmToken').exec().then((owner) => {
       if (owner?.fcmToken) {
@@ -208,10 +214,35 @@ export class ApplicationsService {
       .populate(APPLICANT_POPULATE)
       .exec();
 
-    // Notify the applicant about the status change
     this._notifyApplicant(application.applicant.toString(), dto.status).catch(() => {});
+    this._emitUpdate(id);
 
     return updated;
+  }
+
+  private async _emitUpdate(applicationId: string) {
+    try {
+      const populated = await this.applicationModel
+        .findById(applicationId)
+        .populate(PROPERTY_POPULATE)
+        .populate(APPLICANT_POPULATE)
+        .exec();
+      if (!populated) return;
+      this.messagingGateway.emitApplicationUpdate(applicationId, populated);
+      const ownerId =
+        (populated.property as any)?.owner?._id?.toString?.() ??
+        (populated.property as any)?.owner?.toString();
+      const applicantId =
+        (populated.applicant as any)?._id?.toString?.() ??
+        populated.applicant?.toString();
+      this.messagingGateway.emitToUsers(
+        [ownerId, applicantId].filter(Boolean) as string[],
+        'applicationUpdated',
+        populated,
+      );
+    } catch (e) {
+      this.logger.error(`emitUpdate failed for ${applicationId}: ${e}`);
+    }
   }
 
   private async _notifyApplicant(applicantId: string, newStatus: string) {
@@ -227,7 +258,10 @@ export class ApplicationsService {
   }
 
   async cancel(id: string, userId: string) {
-    const application = await this.applicationModel.findById(id).exec();
+    const application = await this.applicationModel
+      .findById(id)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
     if (!application) {
       throw new NotFoundException(`Application with ID ${id} not found`);
     }
@@ -245,10 +279,19 @@ export class ApplicationsService {
     const updated = await this.applicationModel
       .findByIdAndUpdate(id, { status: 'cancelled' }, { returnDocument: 'after' })
       .exec();
+
+    const ownerId = (application.property as any)?.owner?.toString();
+    if (ownerId) {
+      this._notifyUser(
+        ownerId,
+        'Application Cancelled',
+        'An applicant has withdrawn their application.',
+        { applicationId: id, type: 'application_cancelled' },
+      ).catch(() => {});
+    }
+    this._emitUpdate(id);
     return updated!.toObject();
   }
-
-  // ── Lawyer cases ─────────────────────────────────────────────────────────
 
   async getLawyerCases(lawyerId: string) {
     return this.applicationModel
@@ -262,8 +305,6 @@ export class ApplicationsService {
       .sort({ createdAt: -1 })
       .exec();
   }
-
-  // ── Deal amount / negotiation ────────────────────────────────────────────
 
   async setDealAmount(applicationId: string, amount: number, requesterId: string) {
     const application = await this.applicationModel
@@ -294,7 +335,15 @@ export class ApplicationsService {
       createdAt: new Date(),
     });
 
-    return application.save();
+    const saved = await application.save();
+    this._notifyUser(
+      application.applicant.toString(),
+      'Deal Amount Set',
+      `The owner has proposed a deal amount of ${amount} TND`,
+      { applicationId, type: 'deal_amount' },
+    ).catch(() => {});
+    this._emitUpdate(applicationId);
+    return saved;
   }
 
   async assignLawyer(applicationId: string, lawyerId: string, requesterId: string) {
@@ -307,6 +356,11 @@ export class ApplicationsService {
     const ownerId = (application.property as any)?.owner?.toString();
     if (ownerId !== requesterId) {
       throw new ForbiddenException('Only the property owner can assign a lawyer');
+    }
+
+    const lawyerUser = await this.userModel.findById(lawyerId).select('role').exec();
+    if (!lawyerUser || lawyerUser.role !== UserRole.LAWYER) {
+      throw new BadRequestException('Assigned user must be a registered lawyer');
     }
 
     const current = application.status;
@@ -326,10 +380,379 @@ export class ApplicationsService {
       createdAt: new Date(),
     });
 
-    return application.save();
+    const saved = await application.save();
+
+    this._notifyUser(
+      application.applicant.toString(),
+      'Lawyer Assigned',
+      'The owner has selected a lawyer to draft your contract.',
+      { applicationId, type: 'lawyer_assigned' },
+    ).catch(() => {});
+    this._notifyUser(
+      lawyerId,
+      'New Case Assigned',
+      'You have been assigned to draft a rental contract.',
+      { applicationId, type: 'lawyer_assigned' },
+    ).catch(() => {});
+
+    this._emitUpdate(applicationId);
+    return saved;
   }
 
-  // ── Messages ────────────────────────────────────────────────────────────
+  private async _ensureTopic(application: Application): Promise<string | null> {
+    if (!this.hederaService.isEnabled) return null;
+    if ((application as any).hcsTopicId) return (application as any).hcsTopicId;
+    try {
+      const topicId = await this.hederaService.createTopic(
+        `Aqari Application - ${application._id}`,
+      );
+      await this.applicationModel.findByIdAndUpdate(application._id, { hcsTopicId: topicId });
+      (application as any).hcsTopicId = topicId;
+      return topicId;
+    } catch (e) {
+      this.logger.error(`Topic backfill failed for ${application._id}: ${e}`);
+      return null;
+    }
+  }
+
+  private async _submitConsent(
+    application: Application,
+    payload: Record<string, any>,
+  ): Promise<{ txId?: string; sequenceNumber?: number }> {
+    const topicId = await this._ensureTopic(application);
+    if (!topicId) return {};
+    try {
+      const res = await this.hederaService.submitMessage(topicId, {
+        applicationId: application._id.toString(),
+        ...payload,
+        timestamp: new Date().toISOString(),
+      });
+      return {
+        txId: res.transactionId,
+        sequenceNumber: res.sequenceNumber ?? undefined,
+      };
+    } catch (e) {
+      this.logger.error(`HCS submit failed for ${application._id}: ${e}`);
+      return {};
+    }
+  }
+
+  private _resolveParticipants(application: Application & { property: any }): {
+    ownerId: string;
+    applicantId: string;
+  } {
+    const ownerId =
+      (application.property as any)?.owner?._id?.toString?.() ??
+      (application.property as any)?.owner?.toString();
+    const applicantId =
+      (application.applicant as any)?._id?.toString?.() ??
+      application.applicant?.toString();
+    return { ownerId, applicantId };
+  }
+
+  async proposeVisit(applicationId: string, userId: string, dto: ProposeVisitDto) {
+    const application = await this.applicationModel
+      .findById(applicationId)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
+    if (!application) throw new NotFoundException('Application not found');
+
+    const { ownerId, applicantId } = this._resolveParticipants(application as any);
+    if (userId !== ownerId && userId !== applicantId) {
+      throw new ForbiddenException('Only application participants may propose a visit');
+    }
+
+    const scheduledAt = new Date(dto.scheduledAt);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      throw new BadRequestException('Invalid scheduledAt');
+    }
+
+    (application.visitProposals as any[]).forEach((p) => {
+      if (p.status === 'pending') p.status = 'rejected';
+    });
+
+    const proposalId = randomUUID();
+    const { txId, sequenceNumber } = await this._submitConsent(application, {
+      kind: 'visit_proposal',
+      proposalId,
+      proposedBy: userId,
+      scheduledAt: scheduledAt.toISOString(),
+      location: dto.location ?? null,
+    });
+
+    (application.visitProposals as any[]).push({
+      proposalId,
+      proposedBy: userId,
+      scheduledAt,
+      location: dto.location,
+      status: 'pending',
+      hcsTxId: txId,
+      hcsSequenceNumber: sequenceNumber,
+      createdAt: new Date(),
+    });
+
+    await application.save();
+
+    const otherPartyId = userId === ownerId ? applicantId : ownerId;
+    this._notifyUser(otherPartyId, 'Visit Proposed', 'A visit time has been proposed for your application.', {
+      applicationId,
+      type: 'visit_proposal',
+    }).catch(() => {});
+    this._emitUpdate(applicationId);
+
+    return application.toObject();
+  }
+
+  async respondToVisitProposal(
+    applicationId: string,
+    proposalId: string,
+    userId: string,
+    dto: RespondProposalDto,
+  ) {
+    const application = await this.applicationModel
+      .findById(applicationId)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
+    if (!application) throw new NotFoundException('Application not found');
+
+    const { ownerId, applicantId } = this._resolveParticipants(application as any);
+    if (userId !== ownerId && userId !== applicantId) {
+      throw new ForbiddenException('Only application participants may respond');
+    }
+
+    const proposal = (application.visitProposals as any[]).find(
+      (p) => p.proposalId === proposalId,
+    );
+    if (!proposal) throw new NotFoundException('Proposal not found');
+    if (proposal.status !== 'pending') {
+      throw new BadRequestException(`Proposal is already ${proposal.status}`);
+    }
+    if (proposal.proposedBy.toString() === userId) {
+      throw new ForbiddenException('You cannot respond to your own proposal');
+    }
+
+    const decision = dto.decision === 'accept' ? 'accepted' : 'rejected';
+    const { txId, sequenceNumber } = await this._submitConsent(application, {
+      kind: 'visit_response',
+      proposalId,
+      respondedBy: userId,
+      decision,
+    });
+
+    proposal.status = decision;
+    proposal.respondedBy = userId;
+    proposal.respondedAt = new Date();
+    if (txId) proposal.hcsTxId = txId;
+    if (sequenceNumber) proposal.hcsSequenceNumber = sequenceNumber;
+
+    if (decision === 'accepted') {
+      application.visitDate = proposal.scheduledAt;
+      const fromStatus = application.status;
+      if (fromStatus === 'pending' || fromStatus === 'under_review') {
+        application.status = 'visit_scheduled';
+        (application.statusHistory as any[]).push({
+          fromStatus,
+          toStatus: 'visit_scheduled',
+          changedBy: userId,
+          note: 'Visit proposal accepted',
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    await application.save();
+
+    const otherPartyId = userId === ownerId ? applicantId : ownerId;
+    const verb = decision === 'accepted' ? 'accepted' : 'rejected';
+    this._notifyUser(otherPartyId, 'Visit Response', `Your visit proposal was ${verb}.`, {
+      applicationId,
+      type: 'visit_response',
+    }).catch(() => {});
+    this._emitUpdate(applicationId);
+
+    return application.toObject();
+  }
+
+  async proposePrice(applicationId: string, userId: string, dto: ProposePriceDto) {
+    const application = await this.applicationModel
+      .findById(applicationId)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
+    if (!application) throw new NotFoundException('Application not found');
+
+    const { ownerId, applicantId } = this._resolveParticipants(application as any);
+    if (userId !== ownerId && userId !== applicantId) {
+      throw new ForbiddenException('Only application participants may propose a price');
+    }
+
+    if (typeof dto.amount !== 'number' || dto.amount <= 0) {
+      throw new BadRequestException('Invalid amount');
+    }
+
+    (application.priceProposals as any[]).forEach((p) => {
+      if (p.status === 'pending') p.status = 'rejected';
+    });
+
+    const proposalId = randomUUID();
+    const { txId, sequenceNumber } = await this._submitConsent(application, {
+      kind: 'price_proposal',
+      proposalId,
+      proposedBy: userId,
+      amount: dto.amount,
+      terms: dto.terms ?? null,
+    });
+
+    (application.priceProposals as any[]).push({
+      proposalId,
+      proposedBy: userId,
+      amount: dto.amount,
+      terms: dto.terms,
+      status: 'pending',
+      hcsTxId: txId,
+      hcsSequenceNumber: sequenceNumber,
+      createdAt: new Date(),
+    });
+
+    await application.save();
+
+    const otherPartyId = userId === ownerId ? applicantId : ownerId;
+    this._notifyUser(
+      otherPartyId,
+      'Price Proposed',
+      `A new price has been proposed: ${dto.amount}`,
+      { applicationId, type: 'price_proposal' },
+    ).catch(() => {});
+    this._emitUpdate(applicationId);
+
+    return application.toObject();
+  }
+
+  async respondToPriceProposal(
+    applicationId: string,
+    proposalId: string,
+    userId: string,
+    dto: RespondProposalDto,
+  ) {
+    const application = await this.applicationModel
+      .findById(applicationId)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
+    if (!application) throw new NotFoundException('Application not found');
+
+    const { ownerId, applicantId } = this._resolveParticipants(application as any);
+    if (userId !== ownerId && userId !== applicantId) {
+      throw new ForbiddenException('Only application participants may respond');
+    }
+
+    const proposal = (application.priceProposals as any[]).find(
+      (p) => p.proposalId === proposalId,
+    );
+    if (!proposal) throw new NotFoundException('Proposal not found');
+    if (proposal.status !== 'pending') {
+      throw new BadRequestException(`Proposal is already ${proposal.status}`);
+    }
+    if (proposal.proposedBy.toString() === userId) {
+      throw new ForbiddenException('You cannot respond to your own proposal');
+    }
+
+    const decision = dto.decision === 'accept' ? 'accepted' : 'rejected';
+    const { txId, sequenceNumber } = await this._submitConsent(application, {
+      kind: 'price_response',
+      proposalId,
+      respondedBy: userId,
+      decision,
+      amount: proposal.amount,
+    });
+
+    proposal.status = decision;
+    proposal.respondedBy = userId;
+    proposal.respondedAt = new Date();
+    if (txId) proposal.hcsTxId = txId;
+    if (sequenceNumber) proposal.hcsSequenceNumber = sequenceNumber;
+
+    if (decision === 'accepted') {
+      application.dealAmount = proposal.amount;
+      (application as any).agreedAmount = proposal.amount;
+      (application as any).agreedTerms = proposal.terms;
+
+      const fromStatus = application.status;
+      if (
+        fromStatus !== 'negotiation' &&
+        VALID_TRANSITIONS[fromStatus]?.includes('negotiation')
+      ) {
+        application.status = 'negotiation';
+        (application.statusHistory as any[]).push({
+          fromStatus,
+          toStatus: 'negotiation',
+          changedBy: userId,
+          note: `Price ${proposal.amount} agreed`,
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    await application.save();
+
+    const otherPartyId = userId === ownerId ? applicantId : ownerId;
+    const verb = decision === 'accepted' ? 'accepted' : 'rejected';
+    this._notifyUser(
+      otherPartyId,
+      'Price Response',
+      `Your price proposal was ${verb}.`,
+      { applicationId, type: 'price_response' },
+    ).catch(() => {});
+    this._emitUpdate(applicationId);
+
+    return application.toObject();
+  }
+
+  async setRequesterConditions(
+    applicationId: string,
+    userId: string,
+    dto: SetConditionsDto,
+  ) {
+    const application = await this.applicationModel
+      .findById(applicationId)
+      .populate({ path: 'property', select: 'owner' })
+      .exec();
+    if (!application) throw new NotFoundException('Application not found');
+
+    const { applicantId } = this._resolveParticipants(application as any);
+    if (userId !== applicantId) {
+      throw new ForbiddenException('Only the applicant may set conditions');
+    }
+
+    (application as any).requesterConditions = dto.conditions ?? '';
+    await this._submitConsent(application, {
+      kind: 'conditions_set',
+      conditions: dto.conditions ?? '',
+    });
+    await application.save();
+
+    const ownerId = (application.property as any)?.owner?.toString();
+    if (ownerId) {
+      this._notifyUser(
+        ownerId,
+        'Conditions Updated',
+        'The applicant updated their contract conditions.',
+        { applicationId, type: 'conditions_set' },
+      ).catch(() => {});
+    }
+
+    this._emitUpdate(applicationId);
+    return application.toObject();
+  }
+
+  private async _notifyUser(
+    userId: string,
+    title: string,
+    body: string,
+    data?: Record<string, string>,
+  ) {
+    const user = await this.userModel.findById(userId).select('fcmToken').exec();
+    if (!user?.fcmToken) return;
+    await this.notificationsService.sendToToken(user.fcmToken, title, body, data);
+  }
 
   async getMessages(applicationId: string, userId: string) {
     const application = await this.applicationModel
@@ -374,6 +797,23 @@ export class ApplicationsService {
       content: dto.content,
     });
     const saved = await message.save();
-    return saved.populate({ path: 'sender', select: 'name lastName profileImageUrl' });
+    const populated = await saved.populate({ path: 'sender', select: 'name lastName profileImageUrl' });
+    this.messagingGateway.emitNewMessage(applicationId, populated);
+    const otherPartyId = userId === ownerId ? applicantId : ownerId;
+
+    if (otherPartyId) {
+      this.messagingGateway.emitToUsers(
+        [otherPartyId],
+        'newMessage',
+        populated,
+      );
+      this._notifyUser(
+        otherPartyId,
+        'New Message',
+        'You have a new message',
+        { applicationId, type: 'new_message' },
+      ).catch(() => {});
+    }
+    return populated;
   }
 }

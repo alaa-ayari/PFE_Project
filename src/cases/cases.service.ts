@@ -1,3 +1,5 @@
+// Lawyer case tracking.
+
 import { Injectable } from '@nestjs/common';
 import { CreateCaseDto } from './dto/create-case.dto';
 import { UpdateCaseDto } from './dto/update-case.dto';

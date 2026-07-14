@@ -1,3 +1,5 @@
+// Lawyer REST endpoints.
+
 import {
   Body,
   Controller,
@@ -22,19 +24,16 @@ import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 export class LawyersController {
   constructor(private readonly lawyersService: LawyersService) {}
 
-  // GET /lawyers — list all lawyers (public)
   @Get()
   findAll() {
     return this.lawyersService.findAll();
   }
 
-  // GET /lawyers/:id — single lawyer details (public)
   @Get(':id')
   findById(@Param('id') id: string) {
     return this.lawyersService.findById(id);
   }
 
-  // PATCH /lawyers/:id/profile — update picture, latitude, longitude (JWT required)
   @Patch(':id/profile')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(
@@ -58,7 +57,7 @@ export class LawyersController {
         }
         cb(null, true);
       },
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
   updateProfile(
@@ -72,7 +71,6 @@ export class LawyersController {
     return this.lawyersService.updateProfile(id, dto, picturePath);
   }
 
-  // POST /lawyers/:id/signature — upload lawyer signature
   @Post(':id/signature')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(
@@ -111,7 +109,6 @@ export class LawyersController {
     return { signatureUrl };
   }
 
-  // DELETE /lawyers/:id/signature — delete lawyer signature
   @Delete(':id/signature')
   @UseGuards(JwtAuthGuard)
   async deleteSignature(@Param('id') id: string) {
@@ -119,7 +116,6 @@ export class LawyersController {
     return { message: 'Signature deleted successfully' };
   }
 
-  // PATCH /lawyers/:id/verify — set isVerified true/false (JWT required)
   @Patch(':id/verify')
   @UseGuards(JwtAuthGuard)
   verify(

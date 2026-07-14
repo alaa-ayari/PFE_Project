@@ -28,10 +28,16 @@ export class Rental extends Document {
   status: string;
 
   @Prop({
-    type: [{ paidAt: { type: Date }, amount: { type: Number } }],
+    type: [
+      {
+        paidAt: { type: Date },
+        amount: { type: Number },
+        paymentId: { type: String },
+      },
+    ],
     default: [],
   })
-  paymentHistory: Array<{ paidAt: Date; amount: number }>;
+  paymentHistory: Array<{ paidAt: Date; amount: number; paymentId?: string }>;
 
   @Prop({ type: String, default: '' })
   propertyAddress: string;
@@ -41,6 +47,15 @@ export class Rental extends Document {
 
   @Prop({ type: String, default: '' })
   tenantName: string;
+
+  @Prop({ type: Number, default: 0 })
+  electricityKwh: number;
+
+  @Prop({ type: Number, default: 0 })
+  waterCount: number;
+
+  @Prop({ type: Date })
+  utilitiesUpdatedAt?: Date;
 }
 
 export const RentalSchema = SchemaFactory.createForClass(Rental);

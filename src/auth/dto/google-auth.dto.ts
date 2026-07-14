@@ -4,13 +4,13 @@ import { UserRole } from '../../users/schema/Role_enum';
 export class GoogleAuthDto {
   @IsOptional()
   @IsString()
-  idToken?: string; // From mobile
+  idToken?: string;
 
   @IsOptional()
   @IsString()
-  accessToken?: string; // From web
+  accessToken?: string;
 
   @IsOptional()
   @IsEnum(UserRole)
-  role?: UserRole; // For new users signing up with Google
+  role?: UserRole;
 }

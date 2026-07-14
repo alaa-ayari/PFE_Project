@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, Req } from '@nestjs/common';
+// User REST endpoints.
+
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, UseInterceptors, UploadedFile, BadRequestException, ForbiddenException, Req } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { UsersService } from './users.service';
-import { OcrService } from './ocr.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
@@ -14,17 +15,15 @@ import {
   ScanIdCardDto,
 } from './dto/scan-id-card.dto';
 import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
-import { RolesGuard } from '../config/guard/role.guard';
-import { Roles } from '../config/decorator/role.decorators';
-import { UserRole } from './schema/Role_enum';
 import { UserVerificationService } from './user-verification.service';
+import { FaceRecognitionService } from './face-recognition.service';
 
 @Controller('users')
 export class UsersController {
   constructor(
     private readonly usersService: UsersService,
-    private readonly ocrService: OcrService,
     private readonly userVerificationService: UserVerificationService,
+    private readonly faceRecognitionService: FaceRecognitionService,
   ) {}
 
   @Post()
@@ -33,32 +32,29 @@ export class UsersController {
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard)
   findAll() {
     return this.usersService.findAll();
   }
 
-  // PATCH /users/fcm-token — register FCM device token
   @Patch('fcm-token')
   @UseGuards(JwtAuthGuard)
   updateFcmToken(@Body('fcmToken') fcmToken: string, @Req() req) {
     return this.usersService.updateFcmToken(req.user.userId, fcmToken ?? null);
   }
 
-  // GET /users/favorites — get current user's favorited property IDs
   @Get('favorites')
   @UseGuards(JwtAuthGuard)
   getFavorites(@Req() req) {
     return this.usersService.getFavoriteIds(req.user.userId);
   }
 
-  // POST /users/favorites/:propertyId — add property to favorites
   @Post('favorites/:propertyId')
   @UseGuards(JwtAuthGuard)
   addFavorite(@Param('propertyId') propertyId: string, @Req() req) {
     return this.usersService.addFavorite(req.user.userId, propertyId);
   }
 
-  // DELETE /users/favorites/:propertyId — remove property from favorites
   @Delete('favorites/:propertyId')
   @UseGuards(JwtAuthGuard)
   removeFavorite(@Param('propertyId') propertyId: string, @Req() req) {
@@ -71,30 +67,41 @@ export class UsersController {
     return this.usersService.findOne(id);
   }
 
-  // PATCH /users/:id/profile — update name, lastName, email, phoneNumber
   @Patch(':id/profile')
   @UseGuards(JwtAuthGuard)
   updateProfile(
     @Param('id') id: string,
+    @Req() req: any,
     @Body() dto: UpdateUserProfileDto,
   ) {
+    if (req.user?.userId !== id) {
+      throw new ForbiddenException('You can only update your own profile');
+    }
     return this.usersService.updateProfile(id, dto);
   }
 
   @Patch(':id')
   @UseGuards(JwtAuthGuard)
-  update(@Param('id') id: string, @Body() updateUserDto: UpdateUserDto) {
+  update(
+    @Param('id') id: string,
+    @Req() req: any,
+    @Body() updateUserDto: UpdateUserDto,
+  ) {
+    if (req.user?.userId !== id) {
+      throw new ForbiddenException('You can only update your own account');
+    }
     return this.usersService.update(id, updateUserDto);
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.LAWYER)
-  remove(@Param('id') id: string) {
+  @UseGuards(JwtAuthGuard)
+  remove(@Param('id') id: string, @Req() req: any) {
+    if (req.user?.userId !== id) {
+      throw new ForbiddenException('You can only delete your own account');
+    }
     return this.usersService.remove(id);
   }
 
-  // POST /users/:id/signature — upload user signature
   @Post(':id/signature')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(
@@ -133,7 +140,6 @@ export class UsersController {
     return { signatureUrl };
   }
 
-  // DELETE /users/:id/signature — delete user signature
   @Delete(':id/signature')
   @UseGuards(JwtAuthGuard)
   async deleteSignature(@Param('id') id: string) {
@@ -141,12 +147,6 @@ export class UsersController {
     return { message: 'Signature deleted successfully' };
   }
 
-  /**
-   * Scan ID card and extract identity number, then update user's identity number
-   * @param id - User ID
-   * @param file - The uploaded ID card image
-   * @returns Object containing the extracted identity number and updated user
-   */
   @Post(':id/scan-id-card')
   @UseGuards(JwtAuthGuard)
   @UseInterceptors(FileInterceptor('image', {
@@ -162,7 +162,6 @@ export class UsersController {
       throw new BadRequestException('Please upload an image file');
     }
 
-    // Validate file type
     const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     if (!allowedMimeTypes.includes(file.mimetype)) {
       throw new BadRequestException('Only JPEG, PNG, and WEBP images are allowed');
@@ -212,24 +211,37 @@ export class UsersController {
     return this.userVerificationService.getVerification(id, req.user.userId);
   }
 
-  /**
-   * Extract all text from ID card (for debugging)
-   * @param file - The uploaded ID card image
-   * @returns Object containing all extracted text
-   */
-  @Post('scan-id-card/debug')
-  @UseInterceptors(FileInterceptor('image'))
-  async scanIdCardDebug(@UploadedFile() file: Express.Multer.File) {
-    if (!file) {
-      throw new BadRequestException('Please upload an image file');
+  @Post(':id/face/register')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  async registerFace(
+    @Param('id') id: string,
+    @Req() req: any,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (req.user?.userId !== id) {
+      throw new ForbiddenException('You can only register your own face');
     }
+    return this.faceRecognitionService.registerFace(id, file);
+  }
 
-    const allText = await this.ocrService.extractAllText(file.buffer);
-    
-    return {
-      success: true,
-      extractedText: allText,
-      message: 'Text extracted successfully',
-    };
+  @Post('face/recognize')
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  recognizeFace(@UploadedFile() file: Express.Multer.File) {
+    return this.faceRecognitionService.recognizeFace(file);
+  }
+
+  @Delete(':id/face')
+  @UseGuards(JwtAuthGuard)
+  unregisterFace(@Param('id') id: string, @Req() req: any) {
+    if (req.user?.userId !== id) {
+      throw new ForbiddenException('You can only remove your own face data');
+    }
+    return this.faceRecognitionService.unregisterFace(id);
   }
 }

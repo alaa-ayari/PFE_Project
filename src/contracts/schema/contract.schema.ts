@@ -54,6 +54,35 @@ export class Contract extends Document {
 
   @Prop({ type: String })
   lawyerSignatureUrl?: string;
+
+  @Prop({ type: String })
+  hederaTopicId?: string;
+
+  @Prop({ type: String })
+  ownerSignatureTxId?: string;
+
+  @Prop({ type: String })
+  tenantSignatureTxId?: string;
+
+  @Prop({ type: Number, default: 1 })
+  version: number;
+
+  @Prop({
+    type: [
+      {
+        requestId: { type: String, required: true },
+        requestedBy: { type: MongooseSchema.Types.ObjectId, ref: 'User', required: true },
+        reason: { type: String },
+        resolved: { type: Boolean, default: false },
+        resolvedAt: { type: Date },
+        hcsTxId: { type: String },
+        hcsSequenceNumber: { type: Number },
+        createdAt: { type: Date, default: () => new Date() },
+      },
+    ],
+    default: [],
+  })
+  revisionRequests: any[];
 }
 
 export const ContractSchema = SchemaFactory.createForClass(Contract);

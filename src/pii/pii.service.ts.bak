@@ -1,0 +1,79 @@
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import axios from 'axios';
+
+export interface AnonymizeResult {
+  anonymized: string;
+  hasPii: boolean;
+  entities: Array<{ type: string; start: number; end: number; score: number }>;
+  degraded?: boolean;
+}
+
+/**
+ * Proxy to the Microsoft Presidio PII Anonymizer microservice
+ * (PiiAnonymizer/, default http://localhost:8002).
+ *
+ * Fail-OPEN by default: if the service is unreachable we return the original
+ * text so the chatbot keeps working — but we flag `degraded: true` and log a
+ * warning so the gap is visible.
+ *
+ * Strict mode (PII-02): set `PII_STRICT=true` and an unreachable anonymizer
+ * raises 503 instead of forwarding unmasked text — use this in production
+ * where leaking PII to the external AI is unacceptable.
+ */
+@Injectable()
+export class PiiService {
+  private readonly logger = new Logger(PiiService.name);
+  private readonly baseUrl =
+    process.env.PII_SERVICE_URL || 'http://localhost:8002';
+  private readonly strict =
+    (process.env.PII_STRICT ?? '').toLowerCase() === 'true';
+  // H-11: shared secret sent on every call to the Python service.
+  private readonly internalToken = process.env.INTERNAL_API_TOKEN ?? '';
+
+  async anonymize(text: string, language = 'en'): Promise<AnonymizeResult> {
+    if (!text || !text.trim()) {
+      return { anonymized: text, hasPii: false, entities: [] };
+    }
+    try {
+      const res = await axios.post(
+        `${this.baseUrl}/anonymize`,
+        { text, language },
+        {
+          timeout: 8000,
+          headers: this.internalToken
+            ? { 'X-Internal-Token': this.internalToken }
+            : undefined,
+        },
+      );
+      const data = res.data as {
+        anonymized?: string;
+        hasPii?: boolean;
+        entities?: AnonymizeResult['entities'];
+      };
+      return {
+        anonymized: data.anonymized ?? text,
+        hasPii: !!data.hasPii,
+        entities: data.entities ?? [],
+      };
+    } catch (e: any) {
+      if (this.strict) {
+        this.logger.error(
+          `PII service unavailable and PII_STRICT=true — blocking request: ` +
+            (e?.message ?? e),
+        );
+        throw new ServiceUnavailableException(
+          'Privacy service unavailable — request blocked to avoid leaking personal data.',
+        );
+      }
+      this.logger.warn(
+        `PII service unavailable — forwarding text UNMASKED: ` +
+          (e?.message ?? e),
+      );
+      return { anonymized: text, hasPii: false, entities: [], degraded: true };
+    }
+  }
+}

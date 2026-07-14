@@ -1,4 +1,6 @@
-import { Controller, Get, Patch, Param, UseGuards, Req } from '@nestjs/common';
+// Rentals REST endpoints.
+
+import { Body, Controller, Get, Patch, Param, UseGuards, Req } from '@nestjs/common';
 import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 import { RentalsService } from './rentals.service';
 
@@ -15,5 +17,14 @@ export class RentalsController {
   @Patch(':id/mark-paid')
   markPaid(@Param('id') id: string, @Req() req) {
     return this.rentalsService.markPaid(id, req.user.userId);
+  }
+
+  @Patch(':id/utilities')
+  updateUtilities(
+    @Param('id') id: string,
+    @Req() req,
+    @Body() body: { electricityKwh?: number; waterCount?: number },
+  ) {
+    return this.rentalsService.updateUtilities(id, req.user.userId, body);
   }
 }

@@ -33,6 +33,9 @@ export class Property extends Document {
 
   @Prop({ required: false })
   Registrationdocument: string;
+
+  @Prop({ required: false, type: Number, default: 0 })
+  price: number;
 }
 
 export const PropertySchema = SchemaFactory.createForClass(Property);

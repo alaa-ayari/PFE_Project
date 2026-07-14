@@ -1,0 +1,13 @@
+import { Global, Module } from '@nestjs/common';
+import { PaymentLedgerService } from './payment-ledger.service';
+
+/**
+ * Global so rentals, contracts, and the Stripe webhook can all inject
+ * PaymentLedgerService without re-importing.
+ */
+@Global()
+@Module({
+  providers: [PaymentLedgerService],
+  exports: [PaymentLedgerService],
+})
+export class PaymentLedgerModule {}

@@ -1,3 +1,5 @@
+// Contracts REST endpoints.
+
 import {
   Body,
   Controller,
@@ -26,8 +28,6 @@ import { UserRole } from '../users/schema/Role_enum';
 export class ContractsController {
   constructor(private readonly contractsService: ContractsService) {}
 
-  // ── Lawyer-only routes (must be before /:id to avoid collision) ──
-
   @Get('lawyer')
   @UseGuards(RolesGuard)
   @Roles(UserRole.LAWYER)
@@ -47,14 +47,10 @@ export class ContractsController {
     return this.contractsService.create(dto, req.user.userId);
   }
 
-  // ── Application-scoped ──
-
   @Get('application/:applicationId')
   getByApplication(@Param('applicationId') applicationId: string) {
     return this.contractsService.findByApplication(applicationId);
   }
-
-  // ── Contract by ID ──
 
   @Get(':id')
   getById(@Param('id') id: string) {
@@ -71,13 +67,30 @@ export class ContractsController {
   @Patch(':id/status')
   @UseGuards(RolesGuard)
   @Roles(UserRole.LAWYER)
-  updateStatus(@Param('id') id: string, @Body('status') status: string) {
-    return this.contractsService.updateStatus(id, status);
+  updateStatus(
+    @Param('id') id: string,
+    @Req() req,
+    @Body('status') status: string,
+  ) {
+    return this.contractsService.updateStatus(id, req.user.userId, status);
   }
 
   @Post(':id/sign')
-  signContract(@Param('id') id: string, @Req() req) {
-    return this.contractsService.sign(id, req.user.userId);
+  signContract(
+    @Param('id') id: string,
+    @Req() req,
+    @Body('signatureBase64') signatureBase64?: string,
+  ) {
+    return this.contractsService.sign(id, req.user.userId, signatureBase64);
+  }
+
+  @Post(':id/request-revision')
+  requestRevision(
+    @Param('id') id: string,
+    @Req() req,
+    @Body('reason') reason?: string,
+  ) {
+    return this.contractsService.requestRevision(id, req.user.userId, reason);
   }
 
   @Post(':id/upload-document')
@@ -99,7 +112,15 @@ export class ContractsController {
       limits: { fileSize: 10 * 1024 * 1024 },
     }),
   )
-  uploadDocument(@Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
-    return this.contractsService.uploadDocument(id, `/uploads/contracts/${file.filename}`);
+  uploadDocument(
+    @Param('id') id: string,
+    @Req() req,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.contractsService.uploadDocument(
+      id,
+      req.user.userId,
+      `/uploads/contracts/${file.filename}`,
+    );
   }
 }

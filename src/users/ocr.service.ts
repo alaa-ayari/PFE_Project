@@ -1,3 +1,5 @@
+// CIN image normalizer and Python OCR microservice proxy.
+
 import { Injectable, BadRequestException } from '@nestjs/common';
 import sharp from 'sharp';
 import axios from 'axios';
@@ -26,6 +28,8 @@ const LOW_FIELD_CONFIDENCE = 0.55;
 
 const PYTHON_OCR_URL =
   process.env.PYTHON_OCR_URL ?? 'http://localhost:8001/ocr/scan';
+
+const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN ?? '';
 
 @Injectable()
 export class OcrService {
@@ -61,7 +65,10 @@ export class OcrService {
         missingFields: string[];
         requiresManualReview: boolean;
       }>(PYTHON_OCR_URL, form, {
-        headers: form.getHeaders(),
+        headers: {
+          ...form.getHeaders(),
+          ...(INTERNAL_TOKEN ? { 'X-Internal-Token': INTERNAL_TOKEN } : {}),
+        },
         timeout: 90_000,
         validateStatus: (s) => s === 200,
       });
@@ -115,6 +122,7 @@ export class OcrService {
 
   private async normalizeBaseImage(imageBuffer: Buffer): Promise<Buffer> {
     try {
+
       const image = sharp(imageBuffer, { failOn: 'none' }).rotate();
       const metadata = await image.metadata();
 
@@ -155,8 +163,6 @@ export class OcrService {
       hints.push(`Missing required ${side} fields: ${missingFields.join(', ')}`);
     }
 
-    // Per-field low-confidence warnings — surfaced to the user so they pay
-    // close attention to those fields in the review screen.
     const lowConfFields = Object.entries(fieldConfidences)
       .filter(([, c]) => c < LOW_FIELD_CONFIDENCE)
       .map(([f]) => f);

@@ -1,3 +1,5 @@
+// Applications REST endpoints.
+
 import {
   Body,
   Controller,
@@ -9,7 +11,16 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApplicationsService } from './applications.service';
-import { CreateApplicationDto, UpdateApplicationStatusDto, CreateMessageDto, SetAmountDto } from './dto/create-application.dto';
+import {
+  CreateApplicationDto,
+  UpdateApplicationStatusDto,
+  CreateMessageDto,
+  SetAmountDto,
+  ProposeVisitDto,
+  ProposePriceDto,
+  RespondProposalDto,
+  SetConditionsDto,
+} from './dto/create-application.dto';
 import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 import { RolesGuard } from '../config/guard/role.guard';
 import { Roles } from '../config/decorator/role.decorators';
@@ -85,5 +96,40 @@ export class ApplicationsController {
   @Post(':id/messages')
   sendMessage(@Param('id') id: string, @Req() req, @Body() dto: CreateMessageDto) {
     return this.applicationsService.sendMessage(id, req.user.userId, dto);
+  }
+
+  @Post(':id/visit-proposals')
+  proposeVisit(@Param('id') id: string, @Req() req, @Body() dto: ProposeVisitDto) {
+    return this.applicationsService.proposeVisit(id, req.user.userId, dto);
+  }
+
+  @Post(':id/visit-proposals/:proposalId/respond')
+  respondVisit(
+    @Param('id') id: string,
+    @Param('proposalId') proposalId: string,
+    @Req() req,
+    @Body() dto: RespondProposalDto,
+  ) {
+    return this.applicationsService.respondToVisitProposal(id, proposalId, req.user.userId, dto);
+  }
+
+  @Post(':id/price-proposals')
+  proposePrice(@Param('id') id: string, @Req() req, @Body() dto: ProposePriceDto) {
+    return this.applicationsService.proposePrice(id, req.user.userId, dto);
+  }
+
+  @Post(':id/price-proposals/:proposalId/respond')
+  respondPrice(
+    @Param('id') id: string,
+    @Param('proposalId') proposalId: string,
+    @Req() req,
+    @Body() dto: RespondProposalDto,
+  ) {
+    return this.applicationsService.respondToPriceProposal(id, proposalId, req.user.userId, dto);
+  }
+
+  @Patch(':id/conditions')
+  setConditions(@Param('id') id: string, @Req() req, @Body() dto: SetConditionsDto) {
+    return this.applicationsService.setRequesterConditions(id, req.user.userId, dto);
   }
 }

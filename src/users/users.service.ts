@@ -1,3 +1,5 @@
+// User CRUD, profile, devices, favorites, signature, FCM token.
+
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -57,7 +59,10 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<User | null> {
-    return this.userModel.findOne({ email }).exec();
+    return this.userModel
+      .findOne({ email: email.toLowerCase().trim() })
+      .select('+password')
+      .exec();
   }
 
   findAll() {
@@ -107,10 +112,6 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    // Prevent password updates through this endpoint
-    if (updateUserDto.password) {
-      throw new BadRequestException('Password cannot be update. Use the password reset.');
-    }
 
     if (updateUserDto.email) {
       const existing = await this.userModel
@@ -157,12 +158,6 @@ export class UsersService {
   return updated;
 }
 
-  /**
-   * Update user's identity number with the scanned value from OCR
-   * @param id - User ID
-   * @param scanned - The scanned identity number from OCR
-   * @returns Updated user object without password
-   */
   async updateWithScanned(id: string, scanned: string) {
     const updated = await this.userModel
       .findByIdAndUpdate(
@@ -180,9 +175,6 @@ export class UsersService {
     return result;
   }
 
-  /**
-   * Create a new user with Google authentication
-   */
   async createGoogleUser(googleUserData: CreateGoogleUserDto) {
     const exist = await this.userModel.findOne({ email: googleUserData.email }).exec();
     if (exist) {
@@ -197,7 +189,7 @@ export class UsersService {
       profileImageUrl: googleUserData.profileImageUrl,
       role: googleUserData.role,
       authProvider: googleUserData.authProvider,
-      // No password for Google-only users
+
     });
 
     const saved = await createdUser.save();
@@ -205,9 +197,6 @@ export class UsersService {
     return result;
   }
 
-  /**
-   * Link Google account to existing user
-   */
   async linkGoogleAccount(
     userId: string,
     googleId: string,
@@ -215,8 +204,7 @@ export class UsersService {
     profileImageUrl?: string,
   ) {
     const updateData: any = { googleId, authProvider };
-    
-    // Update profile image if user doesn't have one
+
     if (profileImageUrl) {
       const user = await this.userModel.findById(userId).exec();
       if (user && !user.profileImageUrl) {
@@ -236,35 +224,26 @@ export class UsersService {
     return result;
   }
 
-  /**
-   * Find user by Google ID
-   */
   async findByGoogleId(googleId: string): Promise<User | null> {
     return this.userModel.findOne({ googleId }).exec();
   }
 
-  /**
-   * Update or add device info for a user
-   * If device already exists (by deviceId), update lastLoginAt
-   * Otherwise, add new device with firstLoginAt and lastLoginAt
-   */
   async updateDeviceInfo(userId: string, deviceData: any) {
     const user = await this.userModel.findById(userId).exec();
-    
+
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
 
     const now = new Date();
-    
-    // Check if device already exists
+
     if (user.devices && user.devices.length > 0) {
       const existingDeviceIndex = user.devices.findIndex(
         (device: any) => device.deviceId === deviceData.deviceId
       );
 
       if (existingDeviceIndex !== -1) {
-        // Update existing device
+
         user.devices[existingDeviceIndex] = {
           ...user.devices[existingDeviceIndex],
           ...deviceData,
@@ -272,7 +251,7 @@ export class UsersService {
           lastLoginAt: now,
         };
       } else {
-        // Add new device
+
         user.devices.push({
           ...deviceData,
           firstLoginAt: now,
@@ -280,7 +259,7 @@ export class UsersService {
         });
       }
     } else {
-      // Create devices array with first device
+
       user.devices = [{
         ...deviceData,
         firstLoginAt: now,
@@ -293,12 +272,9 @@ export class UsersService {
     return result;
   }
 
-  /**
-   * Get all devices for a user
-   */
   async getDevices(userId: string) {
     const user = await this.userModel.findById(userId).exec();
-    
+
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
@@ -306,9 +282,6 @@ export class UsersService {
     return user.devices || [];
   }
 
-  /**
-   * Remove a device from user's device list
-   */
   async removeDevice(userId: string, deviceId: string) {
     const updated = await this.userModel
       .findByIdAndUpdate(

@@ -1,3 +1,5 @@
+// Lawyer directory and verification.
+
 import {
   BadRequestException,
   Injectable,
@@ -14,7 +16,6 @@ import * as path from 'path';
 @Injectable()
 export class LawyersService {
   constructor(@InjectModel(User.name) private userModel: Model<User>) {}
-
 
   findAll() {
     return this.userModel
@@ -34,8 +35,6 @@ export class LawyersService {
     const { password, ...result } = lawyer.toObject();
     return result;
   }
-
-  // ── Update profile ────────────────────────────────────────────────────────
 
   async updateProfile(
     id: string,
@@ -68,8 +67,6 @@ export class LawyersService {
     return result;
   }
 
-  // ── Verify ────────────────────────────────────────────────────────────────
-
   async verify(id: string, isVerified: boolean) {
     const lawyer = await this.userModel.findById(id).exec();
     if (!lawyer) {
@@ -86,8 +83,6 @@ export class LawyersService {
     const { password, ...result } = updated!.toObject();
     return result;
   }
-
-  // ── Signature ──────────────────────────────────────────────────────────────
 
   async updateSignatureUrl(id: string, signatureUrl: string) {
     const lawyer = await this.userModel.findById(id).exec();

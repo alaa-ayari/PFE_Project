@@ -1,0 +1,29 @@
+import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+import { Document } from 'mongoose';
+
+/**
+ * One row per Stripe event we have already acted on. The unique index on
+ * `eventId` makes webhook handling idempotent — Stripe retries the same
+ * event on any non-2xx (or network hiccup), and without this a retry could
+ * double-record a fee or double-advance a rent due-date (PAY-01).
+ */
+@Schema({ timestamps: true })
+export class ProcessedStripeEvent extends Document {
+  @Prop({ type: String, required: true, unique: true, index: true })
+  eventId: string;
+
+  @Prop({ type: String })
+  type: string;
+}
+
+export const ProcessedStripeEventSchema = SchemaFactory.createForClass(
+  ProcessedStripeEvent,
+);
+
+// L-13: auto-expire after 30 days. Stripe only retries an event for up to
+// 3 days, so a month is more than enough to cover replays — and prevents
+// the collection from growing unboundedly.
+ProcessedStripeEventSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 60 * 60 * 24 * 30 },
+);

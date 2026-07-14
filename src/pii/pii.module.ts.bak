@@ -1,0 +1,15 @@
+import { Global, Module } from '@nestjs/common';
+import { PiiService } from './pii.service';
+import { PiiController } from './pii.controller';
+
+/**
+ * Global so any module that forwards text to an external AI can inject
+ * PiiService directly.
+ */
+@Global()
+@Module({
+  controllers: [PiiController],
+  providers: [PiiService],
+  exports: [PiiService],
+})
+export class PiiModule {}

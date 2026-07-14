@@ -1,22 +1,16 @@
+// Firebase Cloud Messaging push sender.
+
 import { Injectable, Logger } from '@nestjs/common';
 import * as admin from 'firebase-admin';
+import { retryAsync } from '../resilience/retry.util';
+import { DeadLetterService } from '../resilience/dead-letter.service';
 
-/**
- * Wraps firebase-admin to send FCM push notifications.
- *
- * Setup required:
- *   1. Install: npm install firebase-admin
- *   2. Create a Firebase project at https://console.firebase.google.com
- *   3. Generate a service account key (Project settings → Service accounts → Generate new private key)
- *   4. Base64-encode the JSON:  base64 -i serviceAccountKey.json
- *   5. Set the result as FIREBASE_SERVICE_ACCOUNT in your .env
- */
 @Injectable()
 export class NotificationsService {
   private readonly logger = new Logger(NotificationsService.name);
   private readonly initialized: boolean;
 
-  constructor() {
+  constructor(private readonly deadLetter: DeadLetterService) {
     const serviceAccountB64 = process.env.FIREBASE_SERVICE_ACCOUNT;
     if (!serviceAccountB64) {
       this.logger.warn('FIREBASE_SERVICE_ACCOUNT not set — push notifications disabled');
@@ -37,17 +31,47 @@ export class NotificationsService {
   }
 
   async sendToToken(fcmToken: string, title: string, body: string, data?: Record<string, string>): Promise<void> {
-    if (!this.initialized || !fcmToken) return;
+    if (!this.initialized) {
+      this.logger.warn(
+        `Skipping push "${title}" — firebase-admin not initialised. ` +
+          `Is FIREBASE_SERVICE_ACCOUNT set in .env?`,
+      );
+      return;
+    }
+    if (!fcmToken) {
+      this.logger.warn(
+        `Skipping push "${title}" — the recipient has no FCM token saved. ` +
+          `They need to open the Flutter app at least once on a device with ` +
+          `google-services.json so the token is registered.`,
+      );
+      return;
+    }
+    let attempts = 0;
     try {
-      await admin.messaging().send({
-        token: fcmToken,
-        notification: { title, body },
-        data: data ?? {},
-        android: { priority: 'high' },
-        apns: { payload: { aps: { sound: 'default' } } },
-      });
+      const msgId = await retryAsync(
+        () =>
+          admin.messaging().send({
+            token: fcmToken,
+            notification: { title, body },
+            data: data ?? {},
+            android: { priority: 'high' },
+            apns: { payload: { aps: { sound: 'default' } } },
+          }),
+        { retries: 3, onAttemptFail: (a) => (attempts = a) },
+      );
+      this.logger.log(
+        `Sent push "${title}" to ${fcmToken.slice(0, 10)}… (msg=${msgId})`,
+      );
     } catch (err) {
-      this.logger.warn(`Failed to send notification to token ${fcmToken.slice(0, 10)}…: ${err}`);
+      this.logger.warn(
+        `Failed to send notification to token ${fcmToken.slice(0, 10)}… after retries: ${err}`,
+      );
+      await this.deadLetter.record(
+        'fcm',
+        { fcmToken, title, body, data: data ?? {} },
+        err,
+        attempts,
+      );
     }
   }
 }

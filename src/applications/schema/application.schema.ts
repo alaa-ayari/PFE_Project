@@ -16,6 +16,34 @@ export const APPLICATION_STATUSES = [
   'cancelled',
 ] as const;
 
+export const PROPOSAL_STATUSES = ['pending', 'accepted', 'rejected'] as const;
+
+const VisitProposalSubSchema = {
+  proposalId: { type: String, required: true },
+  proposedBy: { type: MongooseSchema.Types.ObjectId, ref: 'User', required: true },
+  scheduledAt: { type: Date, required: true },
+  location: { type: String },
+  status: { type: String, enum: PROPOSAL_STATUSES, default: 'pending' },
+  respondedBy: { type: MongooseSchema.Types.ObjectId, ref: 'User' },
+  respondedAt: { type: Date },
+  hcsTxId: { type: String },
+  hcsSequenceNumber: { type: Number },
+  createdAt: { type: Date, default: () => new Date() },
+};
+
+const PriceProposalSubSchema = {
+  proposalId: { type: String, required: true },
+  proposedBy: { type: MongooseSchema.Types.ObjectId, ref: 'User', required: true },
+  amount: { type: Number, required: true },
+  terms: { type: String },
+  status: { type: String, enum: PROPOSAL_STATUSES, default: 'pending' },
+  respondedBy: { type: MongooseSchema.Types.ObjectId, ref: 'User' },
+  respondedAt: { type: Date },
+  hcsTxId: { type: String },
+  hcsSequenceNumber: { type: Number },
+  createdAt: { type: Date, default: () => new Date() },
+};
+
 @Schema({ timestamps: true })
 export class Application extends Document {
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Property', required: true })
@@ -47,6 +75,24 @@ export class Application extends Document {
 
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User' })
   lawyer: User;
+
+  @Prop({ type: String })
+  hcsTopicId?: string;
+
+  @Prop({ type: [VisitProposalSubSchema], default: [] })
+  visitProposals: any[];
+
+  @Prop({ type: [PriceProposalSubSchema], default: [] })
+  priceProposals: any[];
+
+  @Prop({ type: Number })
+  agreedAmount?: number;
+
+  @Prop({ type: String })
+  agreedTerms?: string;
+
+  @Prop({ type: String })
+  requesterConditions?: string;
 
   @Prop({
     type: [

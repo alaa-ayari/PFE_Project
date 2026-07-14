@@ -1,0 +1,38 @@
+/**
+ * Retry an async operation with exponential backoff + jitter.
+ *
+ * Pure, dependency-free helper used by every fire-and-forget external write
+ * (Hedera, FCM, payment ledger) so a transient failure no longer silently
+ * loses the write (BUG-B10). On final exhaustion the caller persists the
+ * payload to the dead-letter collection for later inspection/replay.
+ */
+export interface RetryOptions {
+  retries?: number; // total attempts = retries + 1 (default 3 → 4 attempts)
+  baseDelayMs?: number; // first backoff step (default 500ms)
+  maxDelayMs?: number; // cap per-attempt delay (default 8s)
+  onAttemptFail?: (attempt: number, err: unknown) => void;
+}
+
+export async function retryAsync<T>(
+  fn: () => Promise<T>,
+  opts: RetryOptions = {},
+): Promise<T> {
+  const retries = opts.retries ?? 3;
+  const base = opts.baseDelayMs ?? 500;
+  const max = opts.maxDelayMs ?? 8000;
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      opts.onAttemptFail?.(attempt + 1, err);
+      if (attempt === retries) break;
+      const expo = Math.min(max, base * 2 ** attempt);
+      const jitter = Math.random() * expo * 0.3; // ±30% jitter
+      await new Promise((r) => setTimeout(r, expo + jitter));
+    }
+  }
+  throw lastErr;
+}

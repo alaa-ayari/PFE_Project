@@ -1,0 +1,353 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { StripeService } from './stripe.service';
+import { Rental } from '../rentals/schema/rental.schema';
+import { User } from '../users/schema/user.schema';
+import { Property } from '../property/schema/property.schema';
+import { Application } from '../applications/schema/application.schema';
+import { PropertyType, PropertyStatus } from '../property/schema/property_enum';
+import { ProcessedStripeEvent } from './schema/processed-stripe-event.schema';
+import { RentalsService } from '../rentals/rentals.service';
+import { PaymentLedgerService } from '../payment-ledger/payment-ledger.service';
+import { NotificationsService } from '../notifications/notifications.service';
+
+/**
+ * Aqari has THREE payment flows, all with server-trusted amounts:
+ *   1. rent     — tenant pays a month of rent on a rental
+ *   2. purchase — buyer pays the asking price on a SALE property
+ *   3. app_fee  — user pays an Aqari platform / usage fee
+ *
+ * The previous lawyer-fee flow was removed: Aqari only collects on its own
+ * platform, not on third-party professional services.
+ */
+@Injectable()
+export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
+  constructor(
+    private readonly stripe: StripeService,
+    @InjectModel(Rental.name) private rentalModel: Model<Rental>,
+    @InjectModel(Property.name) private propertyModel: Model<Property>,
+    @InjectModel(User.name) private userModel: Model<User>,
+    @InjectModel(Application.name) private applicationModel: Model<Application>,
+    @InjectModel(ProcessedStripeEvent.name)
+    private processedEventModel: Model<ProcessedStripeEvent>,
+    private readonly rentalsService: RentalsService,
+    private readonly paymentLedger: PaymentLedgerService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  // ── Checkout creation ────────────────────────────────────────────
+
+  /** Tenant pays a month's rent. */
+  async createRentCheckout(rentalId: string, userId: string) {
+    const rental = await this.rentalModel.findById(rentalId);
+    if (!rental) throw new NotFoundException('Rental not found');
+    if (rental.tenantId.toString() !== userId) {
+      throw new ForbiddenException('Only the tenant can pay the rent');
+    }
+    const payer = await this.userModel.findById(userId).select('email').exec();
+    return this.stripe.createCheckout({
+      amount: rental.monthlyAmount,
+      label: `Rent — ${rental.propertyAddress}`,
+      customerEmail: payer?.email,
+      metadata: {
+        kind: 'rent',
+        rentalId: String(rental._id),
+        payerId: userId,
+      },
+    });
+  }
+
+  /**
+   * Buyer pays the asking price on a SALE-type property. The amount is
+   * read server-side from `property.price` — the client cannot choose
+   * what it pays. Refuses if the property is not for sale, already sold,
+   * has no published price, or the payer is the owner.
+   */
+  async createPurchaseCheckout(propertyId: string, userId: string) {
+    const property = await this.propertyModel.findById(propertyId);
+    if (!property) throw new NotFoundException('Property not found');
+
+    if (property.PropertyType !== PropertyType.SALE) {
+      throw new BadRequestException('This property is not for sale');
+    }
+    if (property.propertyStatus === PropertyStatus.SOLD) {
+      throw new BadRequestException('This property is already sold');
+    }
+    if (property.owner.toString() === userId) {
+      throw new ForbiddenException('You cannot purchase your own property');
+    }
+    const amount = property.price;
+    if (!amount || amount <= 0) {
+      throw new BadRequestException(
+        'The owner has not published a sale price yet',
+      );
+    }
+
+    const payer = await this.userModel.findById(userId).select('email').exec();
+    return this.stripe.createCheckout({
+      amount,
+      label: `Purchase — ${property.Propertyaddresse}`,
+      customerEmail: payer?.email,
+      metadata: {
+        kind: 'purchase',
+        propertyId: String(property._id),
+        sellerId: property.owner.toString(),
+        payerId: userId,
+      },
+    });
+  }
+
+  /** Any user pays the Aqari platform / app-usage fee. */
+  /**
+   * Aqari platform / usage fee — uses a FIXED Stripe Product configured in
+   * the Stripe Dashboard (Products → "Aqari app fee", with its own picture,
+   * name and price). Stripe Checkout renders that product directly, which
+   * is the professional / branded experience — no custom amount popup, no
+   * line item built from a request body.
+   *
+   * Requires `STRIPE_APP_FEE_PRICE_ID=price_…` in the backend .env. Get it
+   * from Stripe Dashboard → Products → your product → Pricing.
+   */
+  async createAppFeeCheckout(userId: string) {
+    const priceId = process.env.STRIPE_APP_FEE_PRICE_ID?.trim();
+    if (!priceId) {
+      throw new BadRequestException(
+        'App-fee product not configured (STRIPE_APP_FEE_PRICE_ID missing).',
+      );
+    }
+    const payer = await this.userModel.findById(userId).select('email').exec();
+    return this.stripe.createCheckout({
+      priceId,
+      customerEmail: payer?.email,
+      metadata: {
+        kind: 'app_fee',
+        payerId: userId,
+        reference: 'Aqari app fee',
+      },
+    });
+  }
+
+  /**
+   * Cancel the user's Aqari subscription. Cancels the live Stripe
+   * subscription if we have the id (so they aren't billed again), then
+   * clears the local flag so the UI immediately reflects the change.
+   * Idempotent — calling twice is a no-op on the second pass.
+   */
+  async cancelSubscription(userId: string) {
+    const user = await this.userModel
+      .findById(userId)
+      .select('stripeSubscriptionId subscriptionActive')
+      .exec();
+    if (!user) throw new NotFoundException('User not found');
+
+    if (user.stripeSubscriptionId) {
+      try {
+        await this.stripe.cancelSubscription(user.stripeSubscriptionId);
+      } catch (e) {
+        this.logger.warn(
+          `Stripe cancel failed for ${user.stripeSubscriptionId}: ${e}`,
+        );
+        // Continue — the local flag still needs to be cleared so the user
+        // can't sign while we wait for Stripe to settle.
+      }
+    }
+
+    await this.userModel.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          subscriptionActive: false,
+          subscriptionExpiresAt: null,
+          stripeSubscriptionId: null,
+        },
+      },
+    );
+    return { cancelled: true };
+  }
+
+  // ── Webhook ──────────────────────────────────────────────────────
+
+  async handleWebhook(rawBody: Buffer, signature: string) {
+    const event = this.stripe.constructEvent(rawBody, signature);
+
+    if (event.type !== 'checkout.session.completed') {
+      return { received: true, ignored: event.type };
+    }
+
+    // Idempotency (PAY-01): claim this event id atomically. The unique
+    // index on `eventId` means a concurrent or retried delivery of the
+    // same event hits a duplicate-key error here and is safely skipped.
+    try {
+      await this.processedEventModel.create({
+        eventId: event.id,
+        type: event.type,
+      });
+    } catch (e: any) {
+      if (e?.code === 11000) {
+        this.logger.log(`Duplicate Stripe event ${event.id} — skipping`);
+        return { received: true, duplicate: true };
+      }
+      throw e;
+    }
+
+    const session = event.data.object as {
+      id: string;
+      payment_status: string;
+      payment_intent?: string | null;
+      subscription?: string | null;
+      amount_total?: number | null;
+      metadata?: Record<string, string> | null;
+    };
+    if (session.payment_status !== 'paid') {
+      return { received: true, ignored: 'not paid' };
+    }
+
+    const md = session.metadata ?? {};
+    const paymentId = session.payment_intent
+      ? String(session.payment_intent)
+      : session.id;
+    const amount = (session.amount_total ?? 0) / 100; // cents → USD
+
+    try {
+      switch (md.kind) {
+        case 'rent':
+          // markPaid records the rent on the application's Hedera topic
+          // via PaymentLedgerService.recordRent. Passing `paymentId`
+          // (Stripe payment intent or session id) makes it idempotent so
+          // a Stripe retry doesn't double-push to paymentHistory (H-10).
+          await this.rentalsService.markPaid(
+            md.rentalId,
+            md.payerId,
+            paymentId,
+          );
+          this.logger.log(`Rent paid via Stripe — rental ${md.rentalId}`);
+          break;
+
+        case 'purchase':
+          // Flip the property to SOLD and record the purchase on the
+          // shared Hedera transactions topic. Also reject every other
+          // active application for the property (H-02) — without this,
+          // other applicants are left looking at a sold listing.
+          await this.propertyModel.updateOne(
+            { _id: md.propertyId },
+            { $set: { propertyStatus: PropertyStatus.SOLD } },
+          );
+          await this.applicationModel.updateMany(
+            {
+              property: md.propertyId,
+              status: { $nin: ['cancelled', 'rejected'] },
+            },
+            {
+              $set: {
+                status: 'rejected',
+                rejectionReason: 'Property sold to another buyer',
+              },
+            },
+          );
+          await this.paymentLedger.recordPurchase({
+            paymentId,
+            amount: amount,
+            payerId: md.payerId,
+            payeeId: md.sellerId,
+            propertyId: md.propertyId,
+            reference: 'Property purchase',
+          });
+          if (md.sellerId) {
+            this._notify(
+              md.sellerId,
+              'Property Sold',
+              `Your property was purchased for ${amount} USD.`,
+              { type: 'property_sold', propertyId: md.propertyId ?? '' },
+            );
+          }
+          break;
+
+        case 'app_fee':
+          // Unlock platform features (signing / PDF export) for the payer
+          // for one month. H-03: extend from the LATER of `now` and the
+          // current expiry so an early renewal doesn't shorten the window.
+          if (md.payerId) {
+            const startedAt = new Date();
+            const existing = await this.userModel
+              .findById(md.payerId)
+              .select('subscriptionExpiresAt')
+              .exec();
+            const base =
+              existing?.subscriptionExpiresAt &&
+              existing.subscriptionExpiresAt > startedAt
+                ? new Date(existing.subscriptionExpiresAt)
+                : new Date(startedAt);
+            const expiresAt = new Date(base);
+            expiresAt.setDate(expiresAt.getDate() + 30);
+            await this.userModel.updateOne(
+              { _id: md.payerId },
+              {
+                $set: {
+                  subscriptionActive: true,
+                  subscriptionStartedAt: startedAt,
+                  subscriptionExpiresAt: expiresAt,
+                  // Captured so the user can cancel from inside the app.
+                  stripeSubscriptionId: session.subscription ?? null,
+                },
+              },
+            );
+            this._notify(
+              md.payerId,
+              'Subscription active',
+              `Renewed until ${expiresAt.toDateString()}.`,
+              { type: 'subscription_active' },
+            );
+          }
+          await this.paymentLedger.recordAppFee({
+            paymentId,
+            amount: amount,
+            payerId: md.payerId,
+            reference: md.reference ?? 'app fee',
+          });
+          break;
+
+        default:
+          this.logger.warn(`Unknown checkout kind: ${md.kind}`);
+      }
+    } catch (e) {
+      this.logger.error(`Webhook handling failed (${md.kind}): ${e}`);
+      // Release the idempotency claim so Stripe's retry can reprocess
+      // this event (otherwise the retry would be skipped as a duplicate).
+      await this.processedEventModel
+        .deleteOne({ eventId: event.id })
+        .catch(() => {});
+      // Re-throw so Stripe retries the delivery.
+      throw e;
+    }
+
+    return { received: true };
+  }
+
+  private async _notify(
+    userId: string,
+    title: string,
+    body: string,
+    data: Record<string, string>,
+  ) {
+    try {
+      const user = await this.userModel
+        .findById(userId)
+        .select('fcmToken')
+        .exec();
+      if (user?.fcmToken) {
+        await this.notifications.sendToToken(user.fcmToken, title, body, data);
+      }
+    } catch {
+      /* fire-and-forget */
+    }
+  }
+}

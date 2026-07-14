@@ -1,4 +1,7 @@
+// Root module: config, throttler, mongo, scheduler, feature modules.
+
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
@@ -9,13 +12,18 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { CasesModule } from './cases/cases.module';
 import { PropertyModule } from './property/property.module';
 import { LawyersModule } from './lawyers/lawyers.module';
 import { ApplicationsModule } from './applications/applications.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { RentalsModule } from './rentals/rentals.module';
-
+import { HederaModule } from './hedera/hedera.module';
+import { PaymentLedgerModule } from './payment-ledger/payment-ledger.module';
+import { PaymentsModule } from './payments/payments.module';
+import { PiiModule } from './pii/pii.module';
+import { ResilienceModule } from './resilience/resilience.module';
 
   @Module({
     imports: [EmailModule, ConfigModule.forRoot({
@@ -23,28 +31,34 @@ import { RentalsModule } from './rentals/rentals.module';
       cache:true,
       load:[config]
     }),
-    MongooseModule.forRootAsync({ 
+    ThrottlerModule.forRoot([
+      {
+        name: 'global',
+        ttl: 60000,
+        limit: 300,
+      },
+    ]),
+    MongooseModule.forRootAsync({
       imports:[ConfigModule],
       useFactory:async(configService:ConfigService)=>({
           uri: configService.get<string>('database.connectionString'),
       }),
       inject:[ConfigService]
 
-
     }),
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({
-      global: true, 
+      global: true,
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
         const secret = configService.get<string>('jwt.secret');
-        
+
         if (!secret) {
           throw new Error('JWT_SECRET is not defined in environment variables');
         }
         return {
           secret: secret,
-          signOptions: { 
+          signOptions: {
             expiresIn: configService.get<string>('jwt.expiresIn') || '1h'
           },
         } as JwtModuleOptions;
@@ -52,8 +66,11 @@ import { RentalsModule } from './rentals/rentals.module';
       inject: [ConfigService],
     })
 
-      ,AuthModule, UsersModule, CasesModule, PropertyModule, LawyersModule, ApplicationsModule, ContractsModule, RentalsModule],
+      ,HederaModule, PaymentLedgerModule, AuthModule, UsersModule, CasesModule, PropertyModule, LawyersModule, ApplicationsModule, ContractsModule, RentalsModule, PaymentsModule, PiiModule, ResilienceModule],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+  ],
 })
 export class AppModule {}

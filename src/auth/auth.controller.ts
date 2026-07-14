@@ -1,4 +1,7 @@
+// Auth REST endpoints.
+
 import { Controller, Post, Body, HttpCode, HttpStatus, UseGuards, Get, Request } from '@nestjs/common';
+import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { LoginDto } from './dto/login.dto';
@@ -14,11 +17,13 @@ import { VerifyOtpDto } from './dto/verify-otp.dto';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Throttle({ global: { limit: 5, ttl: 60000 } })
   @Post('signup')
   async signup(@Body() createUserDto: CreateUserDto) {
     return this.authService.signup(createUserDto);
   }
 
+  @Throttle({ global: { limit: 5, ttl: 60000 } })
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Body() loginDto: LoginDto) {
@@ -45,7 +50,8 @@ export class AuthController {
       user: req.user,
     };
   }
-  
+
+  @Throttle({ global: { limit: 3, ttl: 60000 } })
   @Post('forgot-password')
   async forgotPassword(@Body() forgotPasswordDto: ForgotPasswordDto) {
     return this.authService.forgotPassword(forgotPasswordDto.email);
@@ -56,11 +62,6 @@ async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
   return this.authService.resetPassword(resetPasswordDto.code, resetPasswordDto.newPassword);
 }
 
-  /**
-   * Google Sign-In / Sign-Up endpoint
-   * - For existing users: Links Google account and logs in
-   * - For new users: Creates account with Google data (requires role)
-   */
 @Post('google')
 async googleAuth(@Body() googleAuthDto: GoogleAuthDto) {
   return this.authService.googleAuth(
@@ -70,6 +71,7 @@ async googleAuth(@Body() googleAuthDto: GoogleAuthDto) {
   );
 }
 
+  @Throttle({ global: { limit: 3, ttl: 60000 } })
   @Post('send-otp')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -77,6 +79,7 @@ async googleAuth(@Body() googleAuthDto: GoogleAuthDto) {
     return this.authService.sendOtp(req.user.userId, sendOtpDto.phoneNumber);
   }
 
+  @Throttle({ global: { limit: 10, ttl: 60000 } })
   @Post('verify-otp')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

@@ -8,7 +8,7 @@ export class Cases extends Document  {
     Type: Type;
     @Prop({ required: true })
     description: string
-    
+
     @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User', required: true })
     landlord: Types.ObjectId;
 

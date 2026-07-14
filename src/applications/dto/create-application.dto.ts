@@ -1,4 +1,4 @@
-import { IsEnum, IsMongoId, IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
+import { IsEnum, IsMongoId, IsNumber, IsOptional, IsPositive, IsString, Matches, MaxLength } from 'class-validator';
 
 export class CreateApplicationDto {
   @IsMongoId()
@@ -38,7 +38,13 @@ export class UpdateApplicationStatusDto {
 }
 
 export class CreateMessageDto {
+
   @IsString()
+  @MaxLength(2000)
+  @Matches(/^\[(Q:[A-Za-z0-9_-]+|A:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+)\].*$/s, {
+    message:
+      'content must follow the structured format [Q:questionId]text or [A:answeredQid:answerTemplateId]text',
+  })
   content: string;
 }
 
@@ -46,4 +52,34 @@ export class SetAmountDto {
   @IsNumber()
   @IsPositive()
   dealAmount: number;
+}
+
+export class ProposeVisitDto {
+  @IsString()
+  scheduledAt: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
+}
+
+export class ProposePriceDto {
+  @IsNumber()
+  @IsPositive()
+  amount: number;
+
+  @IsOptional()
+  @IsString()
+  terms?: string;
+}
+
+export class RespondProposalDto {
+  @IsEnum(['accept', 'reject'])
+  decision: 'accept' | 'reject';
+}
+
+export class SetConditionsDto {
+  @IsOptional()
+  @IsString()
+  conditions?: string;
 }

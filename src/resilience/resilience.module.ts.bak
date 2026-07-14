@@ -1,0 +1,21 @@
+import { Global, Module } from '@nestjs/common';
+import { MongooseModule } from '@nestjs/mongoose';
+import { DeadLetter, DeadLetterSchema } from './dead-letter.schema';
+import { DeadLetterService } from './dead-letter.service';
+
+/**
+ * Global so Hedera, FCM (Notifications) and the payment-ledger client can
+ * all inject DeadLetterService for resilient fire-and-forget writes
+ * (BUG-B10). The `retryAsync` helper is a pure function imported directly.
+ */
+@Global()
+@Module({
+  imports: [
+    MongooseModule.forFeature([
+      { name: DeadLetter.name, schema: DeadLetterSchema },
+    ]),
+  ],
+  providers: [DeadLetterService],
+  exports: [DeadLetterService],
+})
+export class ResilienceModule {}

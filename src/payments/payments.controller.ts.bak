@@ -1,0 +1,73 @@
+import {
+  Controller,
+  Delete,
+  Headers,
+  Param,
+  Post,
+  RawBodyRequest,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import { Request } from 'express';
+import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
+import { PaymentsService } from './payments.service';
+
+/**
+ * Three payment flows, all server-trusted amounts:
+ *   - Rent      : tenant pays a month of rent on a rental.
+ *   - Purchase  : buyer pays the asking price on a for-SALE property.
+ *   - App fee   : a user pays the Aqari platform / service usage fee.
+ *
+ * The lawyer-fee flow was intentionally removed — Aqari only collects on
+ * its own platform, not on third-party professional services.
+ */
+@Controller('payments')
+export class PaymentsController {
+  constructor(private readonly payments: PaymentsService) {}
+
+  @UseGuards(JwtAuthGuard)
+  @Post('rent/:rentalId/checkout')
+  rentCheckout(@Param('rentalId') rentalId: string, @Req() req: any) {
+    return this.payments.createRentCheckout(rentalId, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('purchase/:propertyId/checkout')
+  purchaseCheckout(@Param('propertyId') propertyId: string, @Req() req: any) {
+    // Amount is read server-side from property.price — the client cannot
+    // choose what it pays.
+    return this.payments.createPurchaseCheckout(propertyId, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('app/checkout')
+  appFeeCheckout(@Req() req: any) {
+    // No body — the price is fixed by the Stripe Product (configured in
+    // Dashboard, referenced by STRIPE_APP_FEE_PRICE_ID in the env).
+    return this.payments.createAppFeeCheckout(req.user.userId);
+  }
+
+  /**
+   * Cancel the user's Aqari platform subscription. Cancels the live
+   * Stripe subscription (so they aren't billed again) and clears the
+   * `subscriptionActive` flag locally so the UI updates immediately.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Delete('subscription')
+  cancelSubscription(@Req() req: any) {
+    return this.payments.cancelSubscription(req.user.userId);
+  }
+
+  /**
+   * Stripe webhook. NOT JWT-guarded — authenticated by the Stripe
+   * signature instead. Requires the RAW request body (enabled via
+   * `rawBody: true` in main.ts), otherwise signature verification fails.
+   */
+  @Post('webhook')
+  webhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('stripe-signature') signature: string,
+  ) {
+    return this.payments.handleWebhook(req.rawBody as Buffer, signature);
+  }
+}

@@ -1,3 +1,5 @@
+// Property REST endpoints.
+
 import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, HttpStatus, UseInterceptors, UploadedFile, UploadedFiles, BadRequestException, UseGuards } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -33,7 +35,7 @@ export class PropertyController {
         }
         cb(null, true);
       },
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
   create(
@@ -75,28 +77,31 @@ export class PropertyController {
     return this.propertyService.findByOwner(ownerId);
   }
 
+  @Get(':id/ledger')
+  getLedger(@Param('id') id: string) {
+    return this.propertyService.getLedger(id);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.propertyService.findOne(id);
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updatePropertyDto: UpdatePropertyDto) {
-    return this.propertyService.update(id, updatePropertyDto);
+  update(
+    @Param('id') id: string,
+    @GetUser('userId') userId: string,
+    @Body() updatePropertyDto: UpdatePropertyDto,
+  ) {
+    return this.propertyService.update(id, userId, updatePropertyDto);
   }
 
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
-  remove(@Param('id') id: string) {
-    return this.propertyService.remove(id);
+  remove(@Param('id') id: string, @GetUser('userId') userId: string) {
+    return this.propertyService.remove(id, userId);
   }
 
-  /**
-   * Upload property image
-   * @param id - Property ID
-   * @param file - The uploaded property image
-   * @returns Updated property with image path
-   */
   @Post(':id/upload-image')
   @UseInterceptors(
     FilesInterceptor('images', 10, {
@@ -116,11 +121,12 @@ export class PropertyController {
         }
         cb(null, true);
       },
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
   async uploadPropertyImage(
     @Param('id') id: string,
+    @GetUser('userId') userId: string,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
     if (!files || files.length === 0) {
@@ -128,7 +134,7 @@ export class PropertyController {
     }
 
     const imagePaths = files.map((f) => `/uploads/properties/images/${f.filename}`);
-    const updatedProperty = await this.propertyService.addImages(id, imagePaths);
+    const updatedProperty = await this.propertyService.addImages(id, userId, imagePaths);
 
     return {
       success: true,
@@ -138,12 +144,6 @@ export class PropertyController {
     };
   }
 
-  /**
-   * Upload registration document
-   * @param id - Property ID
-   * @param file - The uploaded registration document
-   * @returns Updated property with document path
-   */
   @Post(':id/upload-document')
   @UseInterceptors(
     FileInterceptor('document', {
@@ -163,11 +163,12 @@ export class PropertyController {
         }
         cb(null, true);
       },
-      limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+      limits: { fileSize: 10 * 1024 * 1024 },
     }),
   )
   async uploadRegistrationDocument(
     @Param('id') id: string,
+    @GetUser('userId') userId: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
     if (!file) {
@@ -175,7 +176,7 @@ export class PropertyController {
     }
 
     const documentPath = `/uploads/properties/documents/${file.filename}`;
-    const updatedProperty = await this.propertyService.updateDocument(id, documentPath);
+    const updatedProperty = await this.propertyService.updateDocument(id, userId, documentPath);
 
     return {
       success: true,

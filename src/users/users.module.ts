@@ -10,6 +10,7 @@ import {
   UserVerificationSchema,
 } from './schema/user-verification.schema';
 import { UserVerificationService } from './user-verification.service';
+import { FaceRecognitionService } from './face-recognition.service';
 
 @Module({
     imports: [EmailModule,
@@ -18,7 +19,7 @@ import { UserVerificationService } from './user-verification.service';
       { name: UserVerification.name, schema: UserVerificationSchema },
     ])],
   controllers: [UsersController],
-  providers: [UsersService, OcrService, UserVerificationService],
+  providers: [UsersService, OcrService, UserVerificationService, FaceRecognitionService],
   exports: [UsersService],
 })
 export class UsersModule {}

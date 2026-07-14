@@ -1,3 +1,5 @@
+// Google ID-token and access-token verifier.
+
 import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { OAuth2Client, TokenPayload } from 'google-auth-library';
 import { ConfigService } from '@nestjs/config';
@@ -11,7 +13,6 @@ export interface GoogleUserPayload {
   profileImageUrl?: string;
 }
 
-// ⭐ ADD THIS: Interface for Google's userinfo API response
 interface GoogleUserInfo {
   id: string;
   email: string;
@@ -32,13 +33,10 @@ export class GoogleAuthService {
     this.oauthClient = new OAuth2Client(clientId);
   }
 
-  /**
-   * Verify Google ID token (from mobile) and extract user information
-   */
   async verifyIdToken(idToken: string): Promise<GoogleUserPayload> {
     try {
       const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
-      
+
       const ticket = await this.oauthClient.verifyIdToken({
         idToken,
         audience: clientId,
@@ -63,12 +61,9 @@ export class GoogleAuthService {
     }
   }
 
-  /**
-   * Verify Google access token (from web) and extract user information
-   */
   async verifyAccessToken(accessToken: string): Promise<GoogleUserPayload> {
     try {
-      // ✅ FIXED: Type the response properly
+
       const response = await axios.get<GoogleUserInfo>(
         `https://www.googleapis.com/oauth2/v1/userinfo?access_token=${accessToken}`
       );
@@ -79,7 +74,6 @@ export class GoogleAuthService {
         throw new BadRequestException('Google account does not have an email');
       }
 
-      // Extract name parts
       const fullName = userInfo.name || '';
       const nameParts = fullName.split(' ');
       const firstName = nameParts[0] || 'User';

@@ -36,9 +36,10 @@ export class User extends Document  {
     lastName: string;
     @Prop({ required: false })
     identitynumber : string;
-    @Prop({ required: true, unique: true })
+    @Prop({ required: true, unique: true, lowercase: true, trim: true })
     email: string;
-    @Prop({ required: false })
+
+    @Prop({ required: false, select: false })
     password: string
     @Prop({ required: true, enum: UserRole, default: UserRole.USER })
     role: UserRole;
@@ -73,7 +74,7 @@ export class User extends Document  {
     @Prop({ required: false })
     googleId: string;
     @Prop({ default: 'local' })
-    authProvider: string; // 'local', 'google', or 'both'
+    authProvider: string;
     @Prop({ type: [DeviceSchema], default: [] })
     devices: Device[];
     @Prop({ required: false, default: null })
@@ -84,5 +85,15 @@ export class User extends Document  {
     favorites: Types.ObjectId[];
     @Prop({ required: false, default: null })
     fcmToken: string;
+
+    @Prop({ default: false })
+    subscriptionActive: boolean;
+    @Prop({ required: false, type: Date, default: null })
+    subscriptionStartedAt: Date;
+    @Prop({ required: false, type: Date, default: null })
+    subscriptionExpiresAt: Date;
+
+    @Prop({ required: false, default: null })
+    stripeSubscriptionId: string;
 }
 export const UserSchema = SchemaFactory.createForClass(User);

@@ -1,3 +1,5 @@
+// Identity verification workflow.
+
 import {
   BadRequestException,
   ForbiddenException,

@@ -1,10 +1,16 @@
+// Rentals: creation from contract, mark paid (idempotent), daily due-date cron, utilities tracking.
+
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { randomUUID } from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Rental } from './schema/rental.schema';
 import { User } from '../users/schema/user.schema';
+import { Contract } from '../contracts/schema/contract.schema';
+import { Application } from '../applications/schema/application.schema';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PaymentLedgerService } from '../payment-ledger/payment-ledger.service';
 
 @Injectable()
 export class RentalsService {
@@ -13,8 +19,37 @@ export class RentalsService {
   constructor(
     @InjectModel(Rental.name) private rentalModel: Model<Rental>,
     @InjectModel(User.name) private userModel: Model<User>,
+    @InjectModel(Contract.name) private contractModel: Model<Contract>,
+    @InjectModel(Application.name) private applicationModel: Model<Application>,
     private notificationsService: NotificationsService,
+    private paymentLedger: PaymentLedgerService,
   ) {}
+
+  private async _resolveApplicationTopic(
+    rental: Rental,
+  ): Promise<{ topicId: string | null; applicationId: string | null }> {
+    try {
+      const contract = await this.contractModel
+        .findById(rental.contractId)
+        .select('applicationId')
+        .exec();
+      if (!contract) return { topicId: null, applicationId: null };
+      const applicationId = contract.applicationId?.toString() ?? null;
+      const application = await this.applicationModel
+        .findById(contract.applicationId)
+        .select('hcsTopicId')
+        .exec();
+      return {
+        topicId: (application as any)?.hcsTopicId ?? null,
+        applicationId,
+      };
+    } catch (e) {
+      this.logger.warn(
+        `Could not resolve application topic for rental ${(rental as any)._id}: ${e}`,
+      );
+      return { topicId: null, applicationId: null };
+    }
+  }
 
   async createFromContract(data: {
     contractId: string;
@@ -27,14 +62,41 @@ export class RentalsService {
     ownerName: string;
     tenantName: string;
   }): Promise<Rental> {
-    // Idempotent: don't create duplicate rentals for the same contract
+
     const existing = await this.rentalModel.findOne({ contractId: data.contractId });
     if (existing) return existing;
 
     const nextDueDate = new Date(data.startDate);
     nextDueDate.setMonth(nextDueDate.getMonth() + 1);
 
-    return this.rentalModel.create({ ...data, nextDueDate, status: 'active' });
+    const rental = await this.rentalModel.create({ ...data, nextDueDate, status: 'active' });
+
+    const [owner, tenant] = await Promise.all([
+      this.userModel.findById(data.ownerId),
+      this.userModel.findById(data.tenantId),
+    ]);
+    const sends: Promise<void>[] = [];
+    if (owner?.fcmToken)
+      sends.push(
+        this.notificationsService.sendToToken(
+          owner.fcmToken,
+          'Rental Now Active',
+          `Your rental at ${data.propertyAddress} is now active`,
+          { rentalId: (rental as any)._id.toString(), type: 'rental_active' },
+        ),
+      );
+    if (tenant?.fcmToken)
+      sends.push(
+        this.notificationsService.sendToToken(
+          tenant.fcmToken,
+          'Rental Now Active',
+          `Your rental at ${data.propertyAddress} is now active`,
+          { rentalId: (rental as any)._id.toString(), type: 'rental_active' },
+        ),
+      );
+    await Promise.all(sends).catch(() => {});
+
+    return rental;
   }
 
   async getMyRentals(userId: string): Promise<Rental[]> {
@@ -44,29 +106,94 @@ export class RentalsService {
       .exec();
   }
 
-  async markPaid(rentalId: string, userId: string): Promise<Rental> {
+  async updateUtilities(
+    rentalId: string,
+    userId: string,
+    data: { electricityKwh?: number; waterCount?: number },
+  ): Promise<Rental> {
     const rental = await this.rentalModel.findOne({
       _id: rentalId,
       $or: [{ ownerId: userId }, { tenantId: userId }],
     });
     if (!rental) throw new NotFoundException('Rental not found');
 
-    const nextDueDate = new Date(rental.nextDueDate);
-    nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+    const update: Record<string, any> = {
+      utilitiesUpdatedAt: new Date(),
+    };
+    if (typeof data.electricityKwh === 'number') {
+      update.electricityKwh = data.electricityKwh;
+    }
+    if (typeof data.waterCount === 'number') {
+      update.waterCount = data.waterCount;
+    }
 
     const updated = await this.rentalModel.findByIdAndUpdate(
       rentalId,
+      { $set: update },
+      { new: true },
+    );
+    return updated!;
+  }
+
+  async markPaid(
+    rentalId: string,
+    userId: string,
+    externalPaymentId?: string,
+  ): Promise<Rental> {
+    const rental = await this.rentalModel.findOne({
+      _id: rentalId,
+      tenantId: userId,
+    });
+    if (!rental) throw new NotFoundException('Rental not found');
+
+    const nextDueDate = new Date(rental.nextDueDate);
+    nextDueDate.setMonth(nextDueDate.getMonth() + 1);
+
+    const paymentId = externalPaymentId ?? randomUUID();
+
+    const updated = await this.rentalModel.findOneAndUpdate(
       {
-        $push: { paymentHistory: { paidAt: new Date(), amount: rental.monthlyAmount } },
+        _id: rentalId,
+        'paymentHistory.paymentId': { $ne: paymentId },
+      },
+      {
+        $push: {
+          paymentHistory: {
+            paidAt: new Date(),
+            amount: rental.monthlyAmount,
+            paymentId,
+          },
+        },
         $set: { nextDueDate },
       },
       { new: true },
     );
+    if (!updated) {
 
-    // Notify the other party
-    const isOwner = rental.ownerId.toString() === userId;
-    const otherPartyId = isOwner ? rental.tenantId.toString() : rental.ownerId.toString();
-    const otherUser = await this.userModel.findById(otherPartyId);
+      this.logger.log(
+        `markPaid: rental ${rentalId} already has paymentId ${paymentId}; skipping duplicate`,
+      );
+      return rental;
+    }
+
+    const { topicId, applicationId } =
+      await this._resolveApplicationTopic(rental);
+    this.paymentLedger
+      .recordRent({
+        topicId: topicId ?? '',
+        paymentId,
+        amount: rental.monthlyAmount,
+        currency: 'TND',
+        payerId: rental.tenantId.toString(),
+        payeeId: rental.ownerId.toString(),
+        applicationId: applicationId ?? '',
+        contractId: rental.contractId?.toString(),
+        propertyId: rental.propertyId?.toString(),
+        reference: `Rent for ${rental.propertyAddress}`,
+      })
+      .catch(() => {});
+
+    const otherUser = await this.userModel.findById(rental.ownerId);
     if (otherUser?.fcmToken) {
       await this.notificationsService.sendToToken(
         otherUser.fcmToken,
@@ -79,7 +206,6 @@ export class RentalsService {
     return updated!;
   }
 
-  // Runs every day at 08:00 — notify parties when rent is due within 3 days
   @Cron(CronExpression.EVERY_DAY_AT_8AM)
   async checkDueDates(): Promise<void> {
     const now = new Date();

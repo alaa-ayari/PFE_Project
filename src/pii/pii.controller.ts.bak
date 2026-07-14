@@ -1,0 +1,18 @@
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
+import { PiiService } from './pii.service';
+
+@Controller('pii')
+@UseGuards(JwtAuthGuard)
+export class PiiController {
+  constructor(private readonly pii: PiiService) {}
+
+  /**
+   * Scrub a piece of text. The Flutter chatbot calls this BEFORE sending a
+   * question to the external AI, so personal data never leaves our stack.
+   */
+  @Post('anonymize')
+  anonymize(@Body() body: { text: string; language?: string }) {
+    return this.pii.anonymize(body?.text ?? '', body?.language ?? 'en');
+  }
+}

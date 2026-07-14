@@ -1,3 +1,5 @@
+// SMTP mail sender.
+
 import { Injectable } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
 
@@ -9,8 +11,8 @@ export class EmailService {
     this.transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
-        user: process.env.GMAIL_USER,      
-        pass: process.env.GMAIL_APP_PASS,  
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASS,
       },
     });
   }

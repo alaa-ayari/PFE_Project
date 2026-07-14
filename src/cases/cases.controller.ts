@@ -1,14 +1,18 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+// Cases REST endpoints.
+
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Req } from '@nestjs/common';
+import { JwtAuthGuard } from '../config/guard/jwt-auth.guard';
 import { CasesService } from './cases.service';
 import { CreateCaseDto } from './dto/create-case.dto';
 import { UpdateCaseDto } from './dto/update-case.dto';
 
 @Controller('cases')
+@UseGuards(JwtAuthGuard)
 export class CasesController {
   constructor(private readonly casesService: CasesService) {}
 
   @Post()
-  create(@Body() createCaseDto: CreateCaseDto) {
+  create(@Body() createCaseDto: CreateCaseDto, @Req() req: any) {
     return this.casesService.create(createCaseDto);
   }
 

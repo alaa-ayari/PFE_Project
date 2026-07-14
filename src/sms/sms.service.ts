@@ -1,3 +1,5 @@
+// Twilio SMS sender.
+
 import { Injectable, Logger } from '@nestjs/common';
 
 @Injectable()
@@ -12,7 +14,7 @@ export class SmsService {
     this.fromNumber = process.env.TWILIO_PHONE_NUMBER || '';
 
     if (accountSid && authToken && !accountSid.startsWith('your_')) {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+
       const twilio = require('twilio');
       this.twilioClient = twilio(accountSid, authToken);
       this.logger.log('Twilio client initialized');
